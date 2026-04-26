@@ -44,11 +44,11 @@ modal run run_jumprec_v0.py --mode quick_mix_strict
 
 ## Current Next Steps
 
-1. Use SmolLM2-135M as the first pretrained local-LM crash test dummy.
-2. Wrap the pretrained model conservatively: freeze the base, add a recurrent
-   refinement block over hidden states, train a JumpRec module to skip toward
-   later refinement states, and keep full-loop fallback.
-3. Implement serial early-exit routing. Evaluating every budget in parallel is
-   useful for analysis, but it is slower than the full loop and is not the
-   intended inference path.
-4. Keep the synthetic suite as a regression test while moving to text tasks.
+1. Repair the SmolLM2-135M wrapper. The first frozen-encoder crash test ran, but
+   the looped teacher did not solve the textual pointer task.
+2. Add a trainable input/task adapter and train the recurrent teacher with a
+   final-answer objective before adding per-step recurrence supervision.
+3. Consider exposing intermediate SmolLM2 layer states or a tiny LoRA on the
+   last few LM layers if frozen final hidden states remain too brittle.
+4. Keep the synthetic suite as the regression test; do not make JumpRec claims
+   on SmolLM2 until the full-loop teacher is strong.

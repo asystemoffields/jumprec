@@ -487,3 +487,62 @@ budget. The correct implementation target for an LM is therefore: try a cheap
 jump, verify, then run only the needed tail or full fallback.
 
 Next target: SmolLM2-135M as the first pretrained local-LM crash test dummy.
+
+## 2026-04-26 - SmolLM2-135M first crash test
+
+Code changes:
+
+- Added `run_jumprec_smol.py`.
+- Uses frozen `HuggingFaceTB/SmolLM2-135M` as a text encoder.
+- Trains a looped refinement teacher over frozen LM hidden states.
+- Trains JumpRec over the teacher states with verifier-controlled fallback.
+- Keeps a direct 3-block baseline over the same frozen encoder states.
+
+Commands:
+
+```text
+python run_jumprec_smol.py --local --mode dry
+modal run run_jumprec_smol.py --mode smol_pointer
+modal run run_jumprec_smol.py --mode smol_pointer_easy
+```
+
+The first real mode used 8 nodes / 4 hops. The easier diagnostic used
+6 nodes / 3 hops and more teacher training.
+
+### Results
+
+| Mode | Teacher Full | JumpRec Best | Strict Fallback Acc | Direct Acc | Notes |
+|---|---:|---:|---:|---:|---|
+| smol_pointer | 14.91% | 24.61% | 16.93% | 23.89% | Teacher failed completely |
+| smol_pointer_easy | 44.27% | 58.33% | 54.17% | 54.07% | Partial learning, still no competent teacher |
+
+Timing on H100:
+
+| Mode | Teacher Full | All JumpRec Budgets |
+|---|---:|---:|
+| smol_pointer | 21.98 ms/batch | 28.30 ms/batch |
+| smol_pointer_easy | 22.92 ms/batch | 27.68 ms/batch |
+
+### Interpretation
+
+This is a real negative result for the first naive LM wrapper, not a negative
+result for JumpRec itself. The blocker is upstream: the looped teacher over
+frozen SmolLM2 hidden states did not solve the textual pointer task. Without a
+competent full-loop teacher, JumpRec has no valid trajectory to amortize.
+
+The easier task is informative. JumpRec and the direct baseline can extract some
+signal from frozen SmolLM2 states, but the recurrent teacher objective is not yet
+forming a reliable algorithmic state machine. The current wrapper asks too much
+of a randomly initialized recurrent block on top of frozen natural-language
+features.
+
+Next SmolLM2 attempt should change the interface before scaling runs:
+
+- Add trainable input/task adapters before the recurrent teacher, not only after
+  the frozen LM.
+- Train the teacher with a final-answer objective first, then add per-step
+  recurrence supervision once final accuracy is high.
+- Consider using SmolLM2 intermediate layer states or a small LoRA on the last
+  few LM layers, while still keeping most of the LM frozen.
+- Keep the synthetic JumpRec suite as the regression target; do not evaluate
+  JumpRec claims on SmolLM2 until the full-loop teacher is strong.

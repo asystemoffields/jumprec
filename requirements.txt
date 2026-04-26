@@ -1,4 +1,6 @@
 modal
 numpy
 torch
-
+transformers
+accelerate
+safetensors
