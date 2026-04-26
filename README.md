@@ -44,11 +44,11 @@ modal run run_jumprec_v0.py --mode quick_mix_strict
 
 ## Current Next Steps
 
-1. Repair the SmolLM2-135M wrapper. The first frozen-encoder crash test ran, but
-   the looped teacher did not solve the textual pointer task.
-2. Add a trainable input/task adapter and train the recurrent teacher with a
-   final-answer objective before adding per-step recurrence supervision.
-3. Consider exposing intermediate SmolLM2 layer states or a tiny LoRA on the
-   last few LM layers if frozen final hidden states remain too brittle.
+1. Repair the pretrained-LM interface. Frozen SmolLM2 final hidden states have
+   not yet yielded a competent looped teacher, even with input adapters and
+   final-answer warmup.
+2. Add a structured answer/query token interface and compare SmolLM2 states
+   against learned token embeddings on the exact same textualized task.
+3. Try intermediate SmolLM2 layer states before using LoRA.
 4. Keep the synthetic suite as the regression test; do not make JumpRec claims
    on SmolLM2 until the full-loop teacher is strong.

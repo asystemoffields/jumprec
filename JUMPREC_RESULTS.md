@@ -546,3 +546,64 @@ Next SmolLM2 attempt should change the interface before scaling runs:
   few LM layers, while still keeping most of the LM frozen.
 - Keep the synthetic JumpRec suite as the regression target; do not evaluate
   JumpRec claims on SmolLM2 until the full-loop teacher is strong.
+
+## 2026-04-26 - SmolLM2 adapter/curriculum repair attempt
+
+Code changes:
+
+- Added `smol_pointer_adapter`.
+- Adds two trainable contextual input-adapter transformer blocks before the
+  looped teacher.
+- Trains the teacher with a final-answer-only warmup first, then switches to
+  recurrence supervision.
+
+Command:
+
+```text
+modal run run_jumprec_smol.py --mode smol_pointer_adapter
+```
+
+Configuration:
+
+- Frozen `HuggingFaceTB/SmolLM2-135M`
+- 6 nodes / 3 hops
+- 5 full-loop blocks
+- 5,000 final-answer teacher warmup steps
+- 3,000 recurrent teacher steps
+- 3,000 JumpRec steps
+- 3,000 direct baseline steps
+
+### Results
+
+| Mode | Teacher Full | JumpRec Best | Strict Fallback Acc | Direct Acc | Runtime |
+|---|---:|---:|---:|---:|---:|
+| smol_pointer_easy | 44.27% | 58.33% | 54.17% | 54.07% | ~5 min |
+| smol_pointer_adapter | 31.84% | 35.89% | 31.79% | 36.21% | ~12 min |
+
+Timing on H100:
+
+| Metric | smol_pointer_adapter |
+|---|---:|
+| Teacher full loop | 32.78 ms/batch |
+| All JumpRec budgets | 37.09 ms/batch |
+
+### Interpretation
+
+The adapter/curriculum repair did not help. It made the model larger and slower,
+but the full-loop teacher got worse than the simpler `smol_pointer_easy` run.
+That suggests the issue is not just "needs a little trainable adapter." Frozen
+SmolLM2 final hidden states are not currently presenting the synthetic pointer
+state in a form our small recurrent teacher can reliably use.
+
+The right next move is to change the representation interface more radically:
+
+- Use a structured/token-level probe task where the answer is read from a
+  dedicated answer/query token instead of the final natural-language token.
+- Compare frozen SmolLM2 states against learned token embeddings on the exact
+  same textualized task, so we know whether the LM is helping or hurting.
+- Try intermediate SmolLM2 layers instead of only final hidden states.
+- Only then consider a tiny LoRA on the last few LM layers.
+
+This result reinforces the boundary: JumpRec is promising on a clean recurrent
+state space, but porting it to pretrained LM hidden states requires first
+building a competent looped teacher interface.

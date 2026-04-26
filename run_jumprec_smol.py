@@ -50,6 +50,8 @@ class Config:
     n_heads: int = 8
     d_ff: int = 1536
     adapter_rank: int = 8
+    input_adapter_blocks: int = 0
+    teacher_final_steps: int = 0
     teacher_steps: int = 800
     jump_steps: int = 1000
     direct_steps: int = 1000
@@ -82,6 +84,8 @@ def config_for_mode(mode: str) -> Config:
         cfg.n_heads = 4
         cfg.d_ff = 192
         cfg.adapter_rank = 4
+        cfg.input_adapter_blocks = 1
+        cfg.teacher_final_steps = 5
         cfg.teacher_steps = 10
         cfg.jump_steps = 10
         cfg.direct_steps = 10
@@ -101,6 +105,18 @@ def config_for_mode(mode: str) -> Config:
         cfg.direct_steps = 2500
         cfg.batch_size = 64
         cfg.eval_batches = 48
+        cfg.log_every = 250
+    elif mode == "smol_pointer_adapter":
+        cfg.n_nodes = 6
+        cfg.max_hops = 3
+        cfg.max_correct = 3
+        cfg.input_adapter_blocks = 2
+        cfg.teacher_final_steps = 5000
+        cfg.teacher_steps = 3000
+        cfg.jump_steps = 3000
+        cfg.direct_steps = 3000
+        cfg.batch_size = 64
+        cfg.eval_batches = 64
         cfg.log_every = 250
     elif mode == "smol_mix":
         cfg.mixed_tasks = True
@@ -278,14 +294,21 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 nn.LayerNorm(cfg.d_model),
                 nn.Linear(cfg.d_model, cfg.d_model),
             )
+            self.input_adapter = nn.ModuleList([TransformerBlock() for _ in range(cfg.input_adapter_blocks)])
             self.loop_block = TransformerBlock()
             self.step_emb = nn.Parameter(torch.zeros(cfg.loop_steps, cfg.d_model))
             self.norm = nn.LayerNorm(cfg.d_model)
             self.head = nn.Linear(cfg.d_model, cfg.n_nodes)
             nn.init.normal_(self.step_emb, std=0.02)
 
-        def encode(self, hidden: torch.Tensor) -> torch.Tensor:
-            return self.input_proj(hidden)
+        def encode(self, hidden: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+            state = self.input_proj(hidden)
+            if self.input_adapter:
+                if attention_mask is None:
+                    attention_mask = torch.ones(state.shape[:2], dtype=torch.bool, device=state.device)
+                for block in self.input_adapter:
+                    state = block(state, attention_mask)
+            return state
 
         def loop_once(self, state: torch.Tensor, attention_mask: torch.Tensor, step_idx: int) -> torch.Tensor:
             idx = min(step_idx, self.step_emb.size(0) - 1)
@@ -405,9 +428,25 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     print(f"[teacher] trainable params={sum(p.numel() for p in teacher.parameters())/1e6:.3f}M")
     opt_t = torch.optim.AdamW(teacher.parameters(), lr=cfg.lr_teacher)
     t0 = time.time()
+    for step in range(1, cfg.teacher_final_steps + 1):
+        hidden, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
+        state0 = teacher.encode(hidden, attention_mask)
+        final_state = teacher.run_steps_from(state0, attention_mask, 0, cfg.loop_steps)
+        logits = teacher.classify(final_state, lengths)
+        loss = F.cross_entropy(logits, target)
+        opt_t.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(teacher.parameters(), 1.0)
+        opt_t.step()
+        if step % cfg.log_every == 0 or step == cfg.teacher_final_steps:
+            print(
+                f"  teacher-final step {step:5d}/{cfg.teacher_final_steps} "
+                f"loss {loss.item():.4f} elapsed {time.time()-t0:.1f}s",
+                flush=True,
+            )
     for step in range(1, cfg.teacher_steps + 1):
         hidden, attention_mask, lengths, target, step_targets, _, _ = batch_encoded(cfg.batch_size)
-        state0 = teacher.encode(hidden)
+        state0 = teacher.encode(hidden, attention_mask)
         logits_by_step, _ = teacher.collect_from_state(state0, attention_mask, lengths, 0, cfg.loop_steps)
         losses = []
         for i, logits_i in enumerate(logits_by_step):
@@ -418,7 +457,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         torch.nn.utils.clip_grad_norm_(teacher.parameters(), 1.0)
         opt_t.step()
         if step % cfg.log_every == 0 or step == cfg.teacher_steps:
-            print(f"  teacher step {step:5d}/{cfg.teacher_steps} loss {loss.item():.4f} elapsed {time.time()-t0:.1f}s", flush=True)
+            print(f"  teacher-recur step {step:5d}/{cfg.teacher_steps} loss {loss.item():.4f} elapsed {time.time()-t0:.1f}s", flush=True)
 
     def eval_teacher():
         teacher.eval()
@@ -428,7 +467,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         with torch.no_grad():
             for _ in range(cfg.eval_batches):
                 hidden, attention_mask, lengths, target, _, hops, task_ids = batch_encoded(cfg.batch_size)
-                state0 = teacher.encode(hidden)
+                state0 = teacher.encode(hidden, attention_mask)
                 logits_by_step, _ = teacher.collect_from_state(state0, attention_mask, lengths, 0, cfg.loop_steps)
                 for i, logits_i in enumerate(logits_by_step):
                     acc_by_step[i] += accuracy(logits_i, target)
@@ -464,7 +503,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     for step in range(1, cfg.jump_steps + 1):
         hidden, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
         with torch.no_grad():
-            state0 = teacher.encode(hidden)
+            state0 = teacher.encode(hidden, attention_mask)
             teacher_logits_by_step, teacher_states = teacher.collect_from_state(state0, attention_mask, lengths, 0, cfg.loop_steps)
             teacher_logits = teacher_logits_by_step[-1]
             soft_teacher = F.softmax(teacher_logits, dim=-1)
@@ -510,7 +549,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         with torch.no_grad():
             for _ in range(cfg.eval_batches):
                 hidden, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
-                state0 = teacher.encode(hidden)
+                state0 = teacher.encode(hidden, attention_mask)
                 out = jumprec.forward_from_state(state0, attention_mask, lengths)
                 full_logits = teacher.classify(teacher.run_steps_from(state0, attention_mask, 0, cfg.loop_steps), lengths)
                 full_pred = full_logits.argmax(dim=-1)
@@ -593,7 +632,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         for step in range(1, cfg.direct_steps + 1):
             hidden, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
             with torch.no_grad():
-                state0 = teacher.encode(hidden)
+                state0 = teacher.encode(hidden, attention_mask)
             logits = direct.forward_from_state(state0.detach(), attention_mask, lengths)
             loss = F.cross_entropy(logits, target)
             opt_d.zero_grad()
@@ -607,7 +646,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         with torch.no_grad():
             for _ in range(cfg.eval_batches):
                 hidden, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
-                state0 = teacher.encode(hidden)
+                state0 = teacher.encode(hidden, attention_mask)
                 acc += accuracy(direct.forward_from_state(state0, attention_mask, lengths), target)
         direct_eval = {
             "direct_acc": acc / cfg.eval_batches,
@@ -637,10 +676,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         return {
             "batch_size": float(cfg.batch_size),
             "teacher_full_ms_per_batch": time_fn(
-                lambda h, m, l: teacher.classify(teacher.run_steps_from(teacher.encode(h), m, 0, cfg.loop_steps), l)
+                lambda h, m, l: teacher.classify(teacher.run_steps_from(teacher.encode(h, m), m, 0, cfg.loop_steps), l)
             ),
             "jumprec_all_budgets_ms_per_batch": time_fn(
-                lambda h, m, l: jumprec.forward_from_state(teacher.encode(h), m, l)
+                lambda h, m, l: jumprec.forward_from_state(teacher.encode(h, m), m, l)
             ),
         }
 
@@ -689,7 +728,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         default="dry",
-        choices=["dry", "smol_pointer", "smol_pointer_easy", "smol_mix", "smol_pointer_long"],
+        choices=[
+            "dry",
+            "smol_pointer",
+            "smol_pointer_easy",
+            "smol_pointer_adapter",
+            "smol_mix",
+            "smol_pointer_long",
+        ],
     )
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
