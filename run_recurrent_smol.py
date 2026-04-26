@@ -81,7 +81,9 @@ class Config:
     mixed_tasks: bool = False
     curriculum_hops: bool = False
     hard_hop_fraction: float = 0.0
+    hop_sample_weights: str = ""
     hard_hop_loss_weight: float = 1.0
+    hop_loss_weights: str = ""
     final_loop_loss_weight: float = 2.0
     jump_steps: int = 0
     max_correct: int = 3
@@ -102,7 +104,7 @@ class Config:
 
 def config_for_mode(mode: str) -> Config:
     cfg = Config(mode=mode)
-    if mode in ("dry", "dry_sweep", "dry_sweep_reuse", "dry_hardhop"):
+    if mode in ("dry", "dry_sweep", "dry_sweep_reuse", "dry_hardhop", "dry_strathop"):
         cfg.use_fake_model = True
         cfg.d_model = 64
         cfg.n_heads = 4
@@ -130,6 +132,14 @@ def config_for_mode(mode: str) -> Config:
             cfg.max_correct = 3
             cfg.hard_hop_fraction = 0.70
             cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 4.0
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
             cfg.final_loop_loss_weight = 4.0
             cfg.timing_batch_sizes = "1,2"
         elif mode == "dry_sweep":
@@ -363,6 +373,48 @@ def config_for_mode(mode: str) -> Config:
         cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
         cfg.eval_batches = 96
         cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 6500
+        cfg.recurrent_steps = 10000
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 4500
+        cfg.direct_layers = 3
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_jumprec":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 4500
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
+        cfg.timing_batches = 64
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.eval_batches = 96
+        cfg.log_every = 500
     elif mode == "retrofit_8n4h_unfreeze":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -445,6 +497,18 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     letters = [chr(ord("A") + i) for i in range(cfg.n_nodes)]
     task_names = ["forward", "inverse", "alternate", "square"] if cfg.mixed_tasks else ["forward"]
 
+    def parse_float_list(value: str) -> List[float]:
+        if not value.strip():
+            return []
+        return [float(x.strip()) for x in value.split(",") if x.strip()]
+
+    hop_sample_weights = parse_float_list(cfg.hop_sample_weights)
+    hop_loss_weights = parse_float_list(cfg.hop_loss_weights)
+    if hop_sample_weights and len(hop_sample_weights) < cfg.max_hops:
+        raise ValueError("hop_sample_weights must provide at least max_hops entries")
+    if hop_loss_weights and len(hop_loss_weights) < cfg.max_hops:
+        raise ValueError("hop_loss_weights must provide at least max_hops entries")
+
     def make_examples(
         batch_size: int,
         active_max_hops: int | None = None,
@@ -463,7 +527,20 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             for i, j in enumerate(perm):
                 inv[j] = i
             start = random.randrange(cfg.n_nodes)
-            if hard_hop_sampling and cfg.hard_hop_fraction > 0.0 and random.random() < cfg.hard_hop_fraction:
+            if hard_hop_sampling and hop_sample_weights:
+                weights = hop_sample_weights[:max_hops]
+                total_weight = sum(weights)
+                if total_weight <= 0:
+                    raise ValueError("hop_sample_weights must have positive mass")
+                r = random.random() * total_weight
+                acc = 0.0
+                hops = max_hops
+                for i, weight in enumerate(weights, start=1):
+                    acc += weight
+                    if r <= acc:
+                        hops = i
+                        break
+            elif hard_hop_sampling and cfg.hard_hop_fraction > 0.0 and random.random() < cfg.hard_hop_fraction:
                 hops = max_hops
             else:
                 hops = random.randint(1, max_hops)
@@ -718,6 +795,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         return (logits.argmax(dim=-1) == target).float().mean().item()
 
     def example_weights(hops):
+        if hop_loss_weights:
+            weight_table = torch.tensor(
+                hop_loss_weights[: cfg.max_hops],
+                dtype=torch.float32,
+                device=hops.device,
+            )
+            return weight_table.index_select(0, (hops - 1).clamp(0, cfg.max_hops - 1))
         if cfg.hard_hop_loss_weight <= 1.0:
             return torch.ones_like(hops, dtype=torch.float32)
         hard = (hops == cfg.max_hops).float()
@@ -1584,6 +1668,7 @@ if __name__ == "__main__":
         choices=[
             "dry",
             "dry_hardhop",
+            "dry_strathop",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -1608,6 +1693,8 @@ if __name__ == "__main__":
             "core3_8n4h_jumprec_direct",
             "core3_8n4h_hardhop_teacher",
             "core3_8n4h_hardhop_jumprec",
+            "core3_8n4h_strathop_teacher",
+            "core3_8n4h_strathop_jumprec",
             "retrofit_8n4h_unfreeze",
             "retrofit_12n6h",
             "retrofit_unfreeze",
@@ -1619,7 +1706,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.local:
         raise SystemExit("Use `modal run run_recurrent_smol.py --mode retrofit_probe`, or add `--local`.")
-    if args.mode not in ("dry", "dry_hardhop", "dry_sweep", "dry_sweep_reuse"):
+    if args.mode not in ("dry", "dry_hardhop", "dry_strathop", "dry_sweep", "dry_sweep_reuse"):
         raise SystemExit("Local CPU guard: only dry modes are allowed locally.")
     cfg = config_for_mode(args.mode)
     if args.seed is not None:
