@@ -19,21 +19,27 @@ using about 2.5 block-equivalents instead of 8, saving roughly 69% compute. The
 strict fallback policy sends uncertain examples back through the full loop and
 is exercised in practice.
 
-The strongest pretrained-LM result is now positive but bounded: a
-recurrent-depth SmolLM2-135M retrofit gives JumpRec a real state space to
-accelerate. With trainable copied JumpRec blocks on the 6-node / 3-hop textual
-pointer task, JumpRec reaches 99.76% +/- 0.29% strict-fallback accuracy at
-threshold 0.80 while using 1.42 +/- 0.22 recurrent core layers instead of 10,
-saving 85.82% +/- 2.16% core-layer compute across three seeds. A first serial
-router averages 17.39 ms/batch versus 21.25 ms/batch for the full teacher on
-H100, though the timing path is still rough.
+The strongest pretrained-LM result is now the mixed recurrent SmolLM2-135M
+setting. With a 3-layer recurrent core, four textual transition families, and a
+3-layer direct control in the table, JumpRec reaches 98.74% +/- 0.93%
+strict-fallback accuracy at threshold 0.80 while using 2.31 +/- 0.38 recurrent
+core layers instead of 15. That saves 84.60% +/- 2.51% counted core-layer
+compute across three seeds. The full recurrent teacher reaches 97.92% +/- 1.18%
+and the direct 3-layer control reaches 95.97% +/- 0.73%.
 
-The main caution is that a simple 3-layer direct control is also very strong on
-the same easy task: 99.10% +/- 0.63% accuracy at 3 of 10 core layers. Harder
-probes show the current boundary: the mixed recurrence task reaches only 86.08%
-full-loop accuracy, and a simple 8-node / 4-hop curriculum drops to 73.51%.
-The next credible result needs to beat the direct control on harder mixed or
-scaled recurrence tasks.
+That is the best evidence so far that JumpRec is doing something more than
+compressing an easy task into a shallow direct head. The wall-clock story is
+not solved yet: on H100, the mixed/core3 full teacher averages 28.23 ms/batch,
+the fast serial router averages 27.83 ms/batch but omits the strict agreement
+check, and the agreement-aware serial router averages 49.19 ms/batch. The
+current claim is therefore compute-layer efficiency plus promising routing
+behavior, not finished inference speed.
+
+The main remaining caution is robustness. The 8-node / 4-hop setting is still
+limited by teacher quality and max-depth failures; JumpRec cannot reliably
+recover a weak full-loop teacher. The next credible result needs either a
+better strict router that does not need an extra agreement pass, or a stronger
+hard-case training recipe for 8/4 and beyond.
 
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
@@ -78,11 +84,11 @@ modal run run_recurrent_smol.py --mode mixed_probe
 
 ## Current Next Steps
 
-1. Move the default LM benchmark to harder mixed recurrence tasks and keep the
-   3-layer direct control in every table.
-2. Improve the 8-node / 4-hop recurrent retrofit; the naive hop curriculum was
-   worse than the first scale-up and likely caused forgetting.
-3. Make the serial JumpRec router agreement-aware and benchmark it as a real
-   inference path, not all budgets in parallel.
-4. Try stronger recurrent cores, especially the 3-core-layer setting, on mixed
-   and 8/4 tasks before making broader architecture claims.
+1. Make the strict router agreement-free but calibrated, so the measured
+   core-layer savings can become real wall-clock savings.
+2. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
+   better balanced curriculum; core depth alone did not solve 4-hop cases.
+3. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
+   control in every table.
+4. Seed-confirm any router or hard-case training improvement before making
+   broader architecture claims.

@@ -956,3 +956,100 @@ The next research move should make the benchmark harder and more architecture
 honest before scaling claims: use mixed recurrence tasks as the default, keep
 the direct 3-layer control in every table, try stronger recurrent cores on the
 harder probes, and improve routing with agreement-aware serial inference.
+
+## 2026-04-26 - harder mixed/core3 confirmation
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode mixed_jumprec_direct
+modal run run_recurrent_smol.py --mode mixed_core3_jumprec_direct
+modal run run_recurrent_smol.py --mode jumprec_8n4h_direct
+modal run run_recurrent_smol.py --mode core3_8n4h_jumprec_direct
+modal run run_recurrent_smol.py --mode mixed_core3_jumprec_direct --seed 101
+modal run run_recurrent_smol.py --mode mixed_core3_jumprec_direct --seed 202
+```
+
+This round tested the encouraging JumpRec result on harder LM-facing settings:
+mixed transition families, explicit direct controls, a stronger 3-layer
+recurrent core, and the 8-node / 4-hop scale-up. It also added per-hop and
+per-task breakdowns for JumpRec and the direct control, plus two serial timing
+paths: a fast router without agreement, and an agreement-aware router matching
+strict evaluation more closely.
+
+Headline results:
+
+| Mode | Teacher Full | JumpRec Strict 0.80 | Avg Core Layers | Savings | Direct Control | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| `mixed_jumprec_direct` | 86.08% | 87.94% | 2.99 / 10 | 70.13% | 87.43% | Core2 mixed is still weak; JumpRec only modestly helps. |
+| `mixed_core3_jumprec_direct`, seeds 42/101/202 | 97.92% +/- 1.18% | 98.74% +/- 0.93% | 2.31 / 15 | 84.60% +/- 2.51% | 95.97% +/- 0.73% | Strongest LM-facing result so far. |
+| `jumprec_8n4h_direct` | 76.37% | 77.98% | 4.65 / 12 | 61.24% | 83.13% | Weak teacher; direct beats JumpRec. |
+| `core3_8n4h_jumprec_direct` | 84.42% | 85.03% | 5.45 / 18 | 69.72% | 80.64% | Better than direct, but 4-hop cases remain poor. |
+
+Mixed/core3 seed breakdown:
+
+| Seed | Teacher Full | JumpRec Strict 0.80 | Avg Core Layers | Savings | Full Fallback | Direct Control |
+|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 98.71% | 99.56% | 2.08 / 15 | 86.16% | 0.44% | 96.73% |
+| 101 | 98.49% | 98.93% | 2.11 / 15 | 85.94% | 1.78% | 95.92% |
+| 202 | 96.56% | 97.73% | 2.74 / 15 | 81.71% | 2.44% | 95.26% |
+| Mean | 97.92% | 98.74% | 2.31 / 15 | 84.60% | 1.55% | 95.97% |
+
+Mixed/core3 by task, mean over seeds:
+
+| Task | Teacher Full | JumpRec Strict 0.80 | Direct Control |
+|---|---:|---:|---:|
+| forward | 99.09% | 99.56% | 96.85% |
+| inverse | 98.91% | 99.46% | 94.67% |
+| alternate | 100.00% | 100.00% | 100.00% |
+| square | 93.66% | 96.17% | 92.21% |
+
+Mixed/core3 timing on H100, mean over seeds:
+
+| Path | Mean ms/batch | Interpretation |
+|---|---:|---|
+| Full recurrent teacher | 28.23 | Real baseline. |
+| All JumpRec budgets | 32.17 | Diagnostic only; computes every budget in parallel. |
+| Fast serial JumpRec 0.80 | 27.83 | Slightly faster than full, but omits strict agreement. |
+| Agreement-aware serial JumpRec 0.80 | 49.19 | More faithful to strict eval, but too slow. |
+
+Per-hop hard-case notes:
+
+- Mixed/core3 stays strong through 3 hops. Seed-42 JumpRec reaches 100.00%,
+  99.20%, and 99.49% on hops 1, 2, and 3 respectively.
+- The weaker seed-202 result is mostly the `square` transition family:
+  teacher 89.09%, JumpRec 92.62%, direct 86.01%.
+- On 8/4, both core2 and core3 still fail many 4-hop cases. Core3 JumpRec is
+  48.65% on hop 4, close to the teacher's 48.35%. This is a teacher-quality
+  bottleneck, not a routing success.
+
+Interpretation:
+
+The mixed/core3 result is the first robust LM-facing evidence that JumpRec is
+not just matching a shallow direct model on an easy pointer task. It beats the
+teacher and the 3-layer direct control across three seeds while using about
+2.31 of 15 recurrent core layers on average. The gain over direct is about
+2.77 percentage points, and the gain over the full teacher is about 0.82
+points, with the largest relative help on the harder `square` family.
+
+The result is conditional, though. JumpRec only looks good when the underlying
+recurrent teacher is already competent. In the 8/4 setting, adding JumpRec
+mostly exposes the same 4-hop weakness the full teacher has. That makes the
+next split clear: use mixed/core3 to solve routing and real inference speed,
+and separately improve hard-hop training before treating 8/4 as a publishable
+scaling benchmark.
+
+Raw softmax early exits remain unusable. They exit too early and over-trust bad
+predictions, so the verifier remains part of the architecture, not a cosmetic
+add-on.
+
+Next direction:
+
+1. Train or calibrate a router that can replace the expensive agreement check.
+   The target is mixed/core3 strict accuracy near 98.7% while keeping serial
+   timing near the fast 27.8 ms/batch path.
+2. Keep the direct control in every run. The claim is only interesting when
+   JumpRec beats direct at comparable or lower counted core layers.
+3. For 8/4, stop treating JumpRec as the fix until the recurrent teacher can
+   handle 4-hop cases. Try balanced hard-hop replay or a more recurrence-aware
+   curriculum next.
