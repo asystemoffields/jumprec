@@ -1053,3 +1053,64 @@ Next direction:
 3. For 8/4, stop treating JumpRec as the fix until the recurrent teacher can
    handle 4-hop cases. Try balanced hard-hop replay or a more recurrence-aware
    curriculum next.
+
+## 2026-04-26 - preliminary agreement-free router test
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode mixed_core3_router_no_agree
+modal run run_recurrent_smol.py --mode mixed_core3_router_verifier1
+```
+
+These runs reused the mixed/core3 setting, skipped the direct-control training
+to save time, and evaluated both agreement-free and agreement-filtered router
+policies from the same JumpRec model. The goal was to see whether the verifier
+can replace the extra next-budget agreement pass, because the previous strict
+agreement serial path was too slow to count as a real inference win.
+
+Seed-42 router results:
+
+| Mode | Router | Threshold | Accuracy | Avg Core Layers | Savings | Full Fallback | Serial Timing |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `mixed_core3_router_no_agree` | no agreement | 0.80 | 98.71% | 2.02 / 15 | 86.55% | 0.10% | 22.86 ms |
+| `mixed_core3_router_no_agree` | no agreement | 0.90 | 99.17% | 2.11 / 15 | 85.94% | 0.32% | 26.63 ms |
+| `mixed_core3_router_no_agree` | no agreement | 0.95 | 99.32% | 2.18 / 15 | 85.44% | 0.49% | 34.01 ms |
+| `mixed_core3_router_verifier1` | no agreement | 0.80 | 98.49% | 2.04 / 15 | 86.42% | 0.22% | 22.32 ms |
+| `mixed_core3_router_verifier1` | no agreement | 0.90 | 98.97% | 2.16 / 15 | 85.60% | 0.42% | 27.74 ms |
+| `mixed_core3_router_verifier1` | no agreement | 0.95 | 99.27% | 2.28 / 15 | 84.81% | 0.76% | 28.02 ms |
+
+Baselines for this seed:
+
+| Path | Accuracy | Timing |
+|---|---:|---:|
+| Full recurrent teacher | 98.71% | 28.82 ms in `router_no_agree`; 28.43 ms in `verifier1` |
+| Prior direct 3-layer control | 96.73% | not timed in this router-only run |
+| Prior agreement-filtered JumpRec 0.80 | 99.56% | 46.11 ms in the previous full mixed/core3 run |
+
+Interpretation:
+
+This is encouraging but not seed-confirmed yet. The plain verifier at threshold
+0.90 is the cleanest trade-off: it beats the full teacher and the direct
+control on seed 42, keeps about 85.9% counted core-layer savings, and is
+modestly faster wall-clock than the full teacher on H100. Threshold 0.95 is
+more accurate but loses the timing win in the plain-verifier run. The heavier
+verifier loss does not help enough to justify itself; it is slightly worse than
+the plain verifier at comparable thresholds.
+
+A small instrumentation bug was also found: in modes with
+`strict_need_agreement = False`, the `jumprec_serial_agree_080_ms_per_batch`
+timing path was not forcing agreement, even though agreement-filtered eval
+metrics were still computed correctly. The fast no-agreement serial timings
+above are the relevant values from this run; agreement serial timing should be
+re-measured after the fix.
+
+Next direction:
+
+1. Seed-confirm `mixed_core3_router_no_agree` at seeds 101 and 202, with the
+   threshold-0.90 router as the main candidate.
+2. If seed-confirmed, update the headline claim from counted core-layer savings
+   to a narrow but real H100 wall-clock win on the harder mixed/core3 benchmark.
+3. If not seed-stable, train the verifier on the whole accept/reject rule or
+   add a learned uncertainty objective instead of simply increasing verifier
+   loss weight.

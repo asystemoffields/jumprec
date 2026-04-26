@@ -179,6 +179,31 @@ def config_for_mode(mode: str) -> Config:
         cfg.direct_layers = 3
         cfg.eval_batches = 64
         cfg.log_every = 500
+    elif mode == "mixed_core3_router_no_agree":
+        cfg.mixed_tasks = True
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 5000
+        cfg.recurrent_steps = 7000
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 0
+        cfg.strict_need_agreement = False
+        cfg.eval_batches = 64
+        cfg.log_every = 500
+    elif mode == "mixed_core3_router_verifier1":
+        cfg.mixed_tasks = True
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 5000
+        cfg.recurrent_steps = 7000
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 0
+        cfg.strict_need_agreement = False
+        cfg.verifier_loss_weight = 1.0
+        cfg.eval_batches = 64
+        cfg.log_every = 500
     elif mode == "retrofit_8n4h":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -901,6 +926,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         def eval_jumprec():
             jumprec.eval()
             thresholds = [(0.80, "080"), (0.90, "090"), (0.95, "095")]
+            router_policies = [("no_agree", False), ("agree", True)]
             metrics = {f"jump_c{c}_acc": 0.0 for c in range(cfg.max_correct + 1)}
             strict_080_by_hop = {str(i): [] for i in range(1, cfg.max_hops + 1)}
             strict_080_by_task = {name: [] for name in task_names}
@@ -909,6 +935,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 metrics[f"strict_{suffix}_fallback_full_loop_rate"] = 0.0
                 metrics[f"strict_{suffix}_fallback_avg_tail_loops"] = 0.0
                 metrics[f"strict_{suffix}_fallback_avg_core_layers"] = 0.0
+                for policy_name, _ in router_policies:
+                    prefix = f"router_{suffix}_{policy_name}"
+                    metrics[f"{prefix}_acc"] = 0.0
+                    metrics[f"{prefix}_full_loop_rate"] = 0.0
+                    metrics[f"{prefix}_avg_tail_loops"] = 0.0
+                    metrics[f"{prefix}_avg_core_layers"] = 0.0
             with torch.no_grad():
                 for _ in range(cfg.eval_batches):
                     input_ids, attention_mask, lengths, target, _, hops, task_ids = batch_encoded(cfg.batch_size)
@@ -962,6 +994,40 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                             torch.full_like(chosen.float(), float(cfg.loop_steps)),
                         ).mean().item()
                         metrics[f"strict_{suffix}_fallback_avg_core_layers"] += core_layers.mean().item()
+                        for policy_name, need_agreement in router_policies:
+                            trusted_router = torch.zeros_like(target, dtype=torch.bool)
+                            chosen_router = torch.full_like(target, cfg.loop_steps)
+                            pred_router = full_pred
+                            for c in range(cfg.max_correct + 1):
+                                agree_ok = agree_stack[c] if need_agreement else torch.ones_like(trusted_router)
+                                accept = (
+                                    (~trusted_router)
+                                    & (verify_stack[c] >= threshold)
+                                    & (margin_stack[c] >= 0.05)
+                                    & (max_prob_stack[c] >= 0.45)
+                                    & agree_ok
+                                )
+                                chosen_router = torch.where(accept, torch.full_like(chosen_router, c), chosen_router)
+                                pred_router = torch.where(accept, pred_stack[c], pred_router)
+                                trusted_router = trusted_router | accept
+                            router_core_layers = torch.where(
+                                trusted_router,
+                                torch.full_like(chosen_router.float(), float(cfg.jump_layers))
+                                + chosen_router.float() * float(cfg.core_layers),
+                                torch.full_like(
+                                    chosen_router.float(),
+                                    float(cfg.loop_steps * cfg.core_layers),
+                                ),
+                            )
+                            prefix = f"router_{suffix}_{policy_name}"
+                            metrics[f"{prefix}_acc"] += (pred_router == target).float().mean().item()
+                            metrics[f"{prefix}_full_loop_rate"] += (~trusted_router).float().mean().item()
+                            metrics[f"{prefix}_avg_tail_loops"] += torch.where(
+                                trusted_router,
+                                chosen_router.float(),
+                                torch.full_like(chosen_router.float(), float(cfg.loop_steps)),
+                            ).mean().item()
+                            metrics[f"{prefix}_avg_core_layers"] += router_core_layers.mean().item()
                         if suffix == "080":
                             for hop in range(1, cfg.max_hops + 1):
                                 mask = hops == hop
@@ -983,6 +1049,11 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 metrics[f"strict_{suffix}_fallback_core_savings_vs_full_pct"] = (
                     1.0 - metrics[f"strict_{suffix}_fallback_avg_core_layers"] / full_core_layers
                 ) * 100.0
+                for policy_name, _ in router_policies:
+                    prefix = f"router_{suffix}_{policy_name}"
+                    metrics[f"{prefix}_core_savings_vs_full_pct"] = (
+                        1.0 - metrics[f"{prefix}_avg_core_layers"] / full_core_layers
+                    ) * 100.0
             metrics["strict_080_by_hop"] = {
                 k: (sum(v) / len(v) if v else None) for k, v in strict_080_by_hop.items()
             }
@@ -1154,6 +1225,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 return last
 
             out["jumprec_serial_080_ms_per_batch"] = time_fn(serial_jumprec)
+            out["jumprec_serial_090_ms_per_batch"] = time_fn(
+                lambda ids, mask, lens: serial_jumprec(ids, mask, lens, 0.90)
+            )
+            out["jumprec_serial_095_ms_per_batch"] = time_fn(
+                lambda ids, mask, lens: serial_jumprec(ids, mask, lens, 0.95)
+            )
 
             def serial_jumprec_agree(ids, mask, lens, threshold: float = 0.80):
                 state0, layer_mask, position_ids, position_embeddings = model.encode(ids, mask)
@@ -1190,19 +1267,18 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         & ((top2[:, 0] - top2[:, 1]) >= 0.05)
                         & (top2[:, 0] >= 0.45)
                     )
-                    if cfg.strict_need_agreement:
-                        if corrections < cfg.max_correct:
-                            next_logits, _ = jumprec.forward_budget_encoded(
-                                sub_state0,
-                                sub_mask,
-                                sub_pos,
-                                sub_emb,
-                                sub_lens,
-                                corrections + 1,
-                            )
-                            accept = accept & (logits.argmax(dim=-1) == next_logits.argmax(dim=-1))
-                        else:
-                            accept = torch.zeros_like(accept)
+                    if corrections < cfg.max_correct:
+                        next_logits, _ = jumprec.forward_budget_encoded(
+                            sub_state0,
+                            sub_mask,
+                            sub_pos,
+                            sub_emb,
+                            sub_lens,
+                            corrections + 1,
+                        )
+                        accept = accept & (logits.argmax(dim=-1) == next_logits.argmax(dim=-1))
+                    else:
+                        accept = torch.zeros_like(accept)
                     last = logits
                     open_idx = open_idx[~accept]
                 if open_idx.numel() > 0:
@@ -1277,6 +1353,8 @@ if __name__ == "__main__":
             "mixed_probe",
             "mixed_jumprec_direct",
             "mixed_core3_jumprec_direct",
+            "mixed_core3_router_no_agree",
+            "mixed_core3_router_verifier1",
             "retrofit_8n4h",
             "retrofit_8n4h_curriculum",
             "jumprec_8n4h_direct",

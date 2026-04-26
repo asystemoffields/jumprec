@@ -35,6 +35,12 @@ check, and the agreement-aware serial router averages 49.19 ms/batch. The
 current claim is therefore compute-layer efficiency plus promising routing
 behavior, not finished inference speed.
 
+A first agreement-free router probe on seed 42 is more promising: threshold
+0.90 reaches 99.17% accuracy while using 2.11 of 15 recurrent core layers and
+running at 26.63 ms/batch versus 28.82 ms/batch for the full teacher. That is
+not a headline until seed-confirmed, but it is the clearest path toward turning
+the counted savings into actual local inference savings.
+
 The main remaining caution is robustness. The 8-node / 4-hop setting is still
 limited by teacher quality and max-depth failures; JumpRec cannot reliably
 recover a weak full-loop teacher. The next credible result needs either a
@@ -84,11 +90,12 @@ modal run run_recurrent_smol.py --mode mixed_probe
 
 ## Current Next Steps
 
-1. Make the strict router agreement-free but calibrated, so the measured
-   core-layer savings can become real wall-clock savings.
-2. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
+1. Seed-confirm the mixed/core3 agreement-free router at threshold 0.90.
+2. If it holds, make the strict router agreement-free but calibrated across
+   harder seeds and tasks.
+3. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
    better balanced curriculum; core depth alone did not solve 4-hop cases.
-3. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
+4. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
    control in every table.
-4. Seed-confirm any router or hard-case training improvement before making
+5. Seed-confirm any router or hard-case training improvement before making
    broader architecture claims.
