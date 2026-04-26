@@ -1172,3 +1172,47 @@ Next direction:
    implementation rather than more verifier calibration.
 3. Keep the no-agreement verifier as the main research path; increasing
    verifier loss did not improve the trade-off.
+
+## 2026-04-26 - batch-1 timing probe
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode mixed_core3_router_no_agree_b1
+```
+
+This is the same seed-42 mixed/core3 agreement-free router as above, but with
+benchmark timing batch size set to 1 while leaving the training batch size at
+64. This is closer to the local interactive LLM use case than the batch-64 H100
+throughput benchmark.
+
+Seed-42 batch-1 timing:
+
+| Path | Timing |
+|---|---:|
+| One recurrent loop | 5.76 ms |
+| Full recurrent teacher | 17.51 ms |
+| All JumpRec budgets | 21.56 ms |
+| No-agreement serial 0.80 | 7.41 ms |
+| No-agreement serial 0.90 | 7.37 ms |
+| No-agreement serial 0.95 | 7.84 ms |
+| Agreement serial 0.80 | 12.72 ms |
+
+Accuracy is unchanged from the seed-42 router run because only the timing batch
+size changed: no-agreement threshold 0.90 gives 99.17% accuracy at 2.11 of 15
+core layers, with 85.94% counted core-layer savings.
+
+Interpretation:
+
+This is the first clean wall-clock result in the intended local direction.
+Batch size 64 punished dynamic routing because subset routing launched several
+small GPU calls inside a throughput benchmark. Batch size 1 reverses that: the
+serial no-agreement router is about 2.37x faster than the full recurrent
+teacher on seed 42 while also beating its accuracy.
+
+This still needs seed confirmation. If seeds 101 and 202 show the same timing
+shape, the current best claim becomes narrow but real: on a harder mixed
+textual recurrence task, a recurrent SmolLM2 retrofit plus JumpRec can improve
+accuracy over the full loop while cutting local-style batch-1 latency
+substantially. If they do not, timing variance rather than model behavior is
+the next target.

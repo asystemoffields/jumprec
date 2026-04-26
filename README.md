@@ -42,6 +42,11 @@ and prior 95.97% direct-control mean. But serial timing averages 35.95 ms/batch
 versus 28.39 ms/batch for the full teacher. The next question is whether this
 becomes favorable at batch size 1, which is closer to local interactive use.
 
+The first batch-1 probe is strongly positive on seed 42: the full recurrent
+teacher takes 17.51 ms, while no-agreement JumpRec at threshold 0.90 takes 7.37
+ms with 99.17% accuracy. That is not seed-confirmed yet, but it matches the
+project's local-inference target better than the batch-64 throughput benchmark.
+
 The main remaining caution is robustness. The 8-node / 4-hop setting is still
 limited by teacher quality and max-depth failures; JumpRec cannot reliably
 recover a weak full-loop teacher. The next credible result needs either a
@@ -91,13 +96,14 @@ modal run run_recurrent_smol.py --mode mixed_probe
 
 ## Current Next Steps
 
-1. Measure the agreement-free router at batch size 1, where local interactive
-   inference may benefit more from adaptive exits than H100 batch-64 throughput.
-2. If batch-1 timing is still poor, work on a fused/static router path rather
-   than more verifier calibration.
-3. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
+1. Seed-confirm the agreement-free batch-1 timing result on seeds 101 and 202.
+2. If batch-1 timing holds, make this the current local-inference headline and
+   only then improve implementation polish.
+3. If batch-1 timing fails, work on a fused/static router path rather than more
+   verifier calibration.
+4. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
    better balanced curriculum; core depth alone did not solve 4-hop cases.
-4. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
+5. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
    control in every table.
-5. Seed-confirm any router or hard-case training improvement before making
+6. Seed-confirm any router or hard-case training improvement before making
    broader architecture claims.
