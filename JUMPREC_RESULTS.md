@@ -1618,3 +1618,93 @@ Run JumpRec on this repaired stratified seed-202 checkpoint. If JumpRec retains
 the teacher while saving compute, then the hard-case story becomes much cleaner:
 stratified recurrence training creates a robust teacher, and JumpRec compresses
 the recurrent compute.
+
+## 2026-04-26 - JumpRec on stratified 8/4 teacher
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_jumprec --seed 202
+```
+
+This loaded `/results/checkpoints/core3_8n4h_strathop_seed202.pt`, skipped
+teacher training, trained JumpRec, trained the direct control, and ran the
+batch-size timing sweep.
+
+The loaded teacher eval reproduced the teacher-only result:
+
+| Path | Accuracy | Avg Core Layers | Savings |
+|---|---:|---:|---:|
+| Full recurrent teacher | 99.53% | 18.00 / 18 | 0.00% |
+| Direct 3-layer control | 97.56% | 3.00 / 18 | 83.33% |
+| No-agree router 0.80 | 99.15% | 3.26 / 18 | 81.88% |
+| No-agree router 0.90 | 99.45% | 3.33 / 18 | 81.49% |
+| No-agree router 0.95 | 99.64% | 3.42 / 18 | 80.98% |
+| Agreement router 0.80 | 99.79% | 3.33 / 18 | 81.49% |
+
+Fixed JumpRec correction budgets:
+
+| Budget | Accuracy |
+|---:|---:|
+| Jump + 0 tail loops | 48.42% |
+| Jump + 1 tail loop | 94.42% |
+| Jump + 2 tail loops | 99.37% |
+| Jump + 3 tail loops | 99.74% |
+
+Hop breakdown for no-agreement threshold 0.80:
+
+| Hop | Accuracy |
+|---:|---:|
+| 1 | 99.91% |
+| 2 | 99.85% |
+| 3 | 99.30% |
+| 4 | 97.58% |
+
+The direct control is much stronger under the stratified recipe than it was in
+the max-hop runs, but it still leaves a clear hard-hop gap: direct hop-4
+accuracy is 90.79%, while the recurrent teacher is 98.08% on hop 4 and JumpRec
+threshold 0.80 is 97.58%.
+
+Batch-size timing for no-agreement threshold 0.90:
+
+| Batch Size | Full Teacher | Router 0.90 | Speedup |
+|---:|---:|---:|---:|
+| 1 | 20.61 ms | 9.20 ms | 2.24x |
+| 2 | 21.54 ms | 12.13 ms | 1.78x |
+| 4 | 22.00 ms | 13.95 ms | 1.58x |
+| 8 | 22.29 ms | 16.03 ms | 1.39x |
+| 16 | 23.14 ms | 18.56 ms | 1.25x |
+| 32 | 23.60 ms | 20.42 ms | 1.16x |
+| 64 | 34.18 ms | 24.45 ms | 1.40x |
+
+Threshold 0.95 is the cleanest quality point on this seed: it slightly beats
+the full teacher, 99.64% vs 99.53%, while using only 3.42 of 18 counted
+recurrent core layers. It also remains faster than the full teacher in the
+timing sweep: 9.48 ms vs 20.61 ms at batch size 1, and 26.79 ms vs 34.18 ms at
+batch size 64.
+
+Interpretation:
+
+This is the cleanest hard-case result so far. The stratified recipe repaired
+the previously weak seed-202 teacher, and JumpRec then retained or slightly
+improved that teacher while saving about 81% counted recurrent core compute.
+The direct baseline is now genuinely competitive on easy/intermediate hops,
+which makes the comparison more meaningful: the remaining advantage is
+concentrated where recurrence should matter most.
+
+This run is also the first hard-case timing sweep where the current unfused
+serial no-agreement router is faster than the full recurrent teacher across
+all measured batch sizes. That should be treated as promising rather than
+settled: it is one seed, one synthetic recurrence family, and one H100 timing
+setup. But it is a much better shape than the earlier max-hop hard-hop runs,
+where the router lost at moderate and large batch sizes.
+
+Next:
+
+1. Seed-confirm the stratified teacher recipe on seeds 42 and 101.
+2. If those teachers are strong, run stratified JumpRec on the same seeds.
+3. Compare stratified-vs-max-hop across matched seeds, including direct
+   control, router accuracy, counted layers, and timing.
+4. Start preparing the paper-style table around three tiers: toy pointer
+   proof, mixed SmolLM2 seed-confirmed local latency, and stratified 8/4
+   hard-case robustness.

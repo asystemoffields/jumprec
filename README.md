@@ -57,30 +57,28 @@ production-serving throughput claims without fused routing.
 The runner now supports checkpoint save/load and batch-size timing sweeps, so
 future timing and threshold probes do not need to retrain from scratch.
 
-The main remaining caution is robustness. The 8-node / 4-hop setting is still
-limited by teacher quality and max-depth failures; JumpRec cannot reliably
-recover a weak full-loop teacher. The next credible result needs either a
-better strict router that does not need an extra agreement pass, or a stronger
-hard-case training recipe for 8/4 and beyond.
+The main remaining caution is robustness. JumpRec does not reliably recover a
+weak full-loop teacher, so hard-case teacher quality is now a first-class part
+of the architecture story.
 
-The first hard-case repair is positive on seed 42. A hard-hop 8-node / 4-hop
-teacher with 3 recurrent core layers reaches about 94.9% full-loop accuracy
-under uniform hop eval, with hop-4 around 95%. JumpRec on that repaired teacher
-matches or slightly beats the teacher at roughly 4.7-5.1 of 18 recurrent core
-layers, saving about 71-74% counted core compute. Batch-1 timing remains faster,
-but the crossover comes earlier than on the easier mixed task.
+The first max-hop repair was positive on seeds 42 and 101 but failed on seed
+202, mainly from hop-3 collapse. On the two strong max-hop teachers, JumpRec
+matched or beat the full teacher while using about 4.4 of 18 recurrent core
+layers at threshold 0.90, with about a 1.9x batch-1 speedup.
 
-Seed confirmation is mixed: seed 101 also produces a strong repaired teacher
-around 96.1%, but seed 202 remains weak around 76.9%, mainly from hop-3
-collapse. The hard-hop repair is therefore real but not yet seed-robust.
-On the two strong repaired teachers, JumpRec matches or beats the full teacher
-while using about 4.4 of 18 recurrent core layers at threshold 0.90, with about
-a 1.9x batch-1 speedup.
+The better hard-case recipe appears to be stratified hard-hop replay. On the
+previously weak seed 202, sampling hops with weights `0.10,0.20,0.35,0.35` and
+loss weights `1.0,1.2,2.0,2.0` raised full-loop accuracy from 76.9% to 99.5%
+under uniform hop eval. JumpRec on that repaired checkpoint reached 99.64% at
+threshold 0.95 while using 3.42 of 18 recurrent core layers, slightly beating
+the 99.53% loaded teacher and the 97.56% direct control. The same run was
+faster than the full teacher across the batch-size timing sweep, including
+2.17x at batch size 1 and 1.28x at batch size 64 for threshold 0.95.
 
-The likely fix is stratified hard-hop replay. On the previously weak seed 202,
-sampling hops with weights `0.10,0.20,0.35,0.35` and loss weights
-`1.0,1.2,2.0,2.0` raised full-loop accuracy from 76.9% to 99.5% under uniform
-hop eval. The next test is JumpRec on that stratified seed-202 checkpoint.
+That stratified 8/4 result is the strongest hard-case shape so far, but it is
+still a single seed. The next credibility step is seed-confirming the
+stratified teacher recipe on seeds 42 and 101, then running JumpRec on those
+checkpoints if the teachers are strong.
 
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
@@ -161,13 +159,16 @@ modal run run_recurrent_smol.py --mode core3_8n4h_strathop_jumprec
 
 1. Make the mixed/core3 small-batch result the current local-inference
    headline, while keeping the synthetic-task caveat explicit.
-2. Run `core3_8n4h_strathop_jumprec --seed 202` to test JumpRec on the repaired
-   stratified teacher.
-3. Seed-confirm stratified hard-hop replay on seeds 42 and 101, then compare it
-   against the max-hop-only recipe.
-4. Keep scale portability in the design loop: favor block-level mechanisms that
+2. Seed-confirm stratified hard-hop replay on seeds 42 and 101, then run
+   stratified JumpRec on those checkpoints if the teachers are strong.
+3. Compare stratified-vs-max-hop across matched seeds, including direct
+   control, router accuracy, counted layers, and timing.
+4. Begin staging paper-style result tables around three tiers: toy pointer
+   proof, mixed SmolLM2 seed-confirmed local latency, and stratified 8/4
+   hard-case robustness.
+5. Keep scale portability in the design loop: favor block-level mechanisms that
    can survive 2B, 9B, and larger serving economics.
-5. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
+6. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
    control in every table.
-6. Seed-confirm any router or hard-case training improvement before making
+7. Seed-confirm any router or hard-case training improvement before making
    broader architecture claims.
