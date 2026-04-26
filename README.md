@@ -19,12 +19,21 @@ using about 2.5 block-equivalents instead of 8, saving roughly 69% compute. The
 strict fallback policy sends uncertain examples back through the full loop and
 is exercised in practice.
 
-The strongest pretrained-LM result is now positive: a recurrent-depth
-SmolLM2-135M retrofit solves a 6-node / 3-hop textual pointer task at
-99.60% +/- 0.18% full-loop accuracy across four seeds. On top of that teacher,
-JumpRec reaches 99.11% +/- 0.27% strict-fallback accuracy at threshold 0.80
-while using 4.61 +/- 0.28 recurrent core layers instead of 10, saving
-53.88% +/- 2.75% core-layer compute across three seeds.
+The strongest pretrained-LM result is now positive but bounded: a
+recurrent-depth SmolLM2-135M retrofit gives JumpRec a real state space to
+accelerate. With trainable copied JumpRec blocks on the 6-node / 3-hop textual
+pointer task, JumpRec reaches 99.76% +/- 0.29% strict-fallback accuracy at
+threshold 0.80 while using 1.42 +/- 0.22 recurrent core layers instead of 10,
+saving 85.82% +/- 2.16% core-layer compute across three seeds. A first serial
+router averages 17.39 ms/batch versus 21.25 ms/batch for the full teacher on
+H100, though the timing path is still rough.
+
+The main caution is that a simple 3-layer direct control is also very strong on
+the same easy task: 99.10% +/- 0.63% accuracy at 3 of 10 core layers. Harder
+probes show the current boundary: the mixed recurrence task reaches only 86.08%
+full-loop accuracy, and a simple 8-node / 4-hop curriculum drops to 73.51%.
+The next credible result needs to beat the direct control on harder mixed or
+scaled recurrence tasks.
 
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
@@ -63,14 +72,17 @@ modal run run_jumprec_v0.py --mode quick_c6_no_hidden
 modal run run_jumprec_v0.py --mode quick_mix_strict
 modal run run_recurrent_smol.py --mode retrofit_probe
 modal run run_recurrent_smol.py --mode jumprec_probe
+modal run run_recurrent_smol.py --mode direct_probe
+modal run run_recurrent_smol.py --mode mixed_probe
 ```
 
 ## Current Next Steps
 
-1. Add true serial early-exit inference for JumpRec; all-budget evaluation is
-   still slower wall-clock than the full recurrent teacher.
-2. Improve the 8-node / 4-hop recurrent retrofit; the current small-core model
-   reaches 84.47% full-loop accuracy and struggles on 4-hop cases.
-3. Add direct/non-recurrent baselines for the recurrent SmolLM2 runner.
-4. Keep the synthetic suite as the regression test while scaling the LM-facing
-   benchmarks carefully.
+1. Move the default LM benchmark to harder mixed recurrence tasks and keep the
+   3-layer direct control in every table.
+2. Improve the 8-node / 4-hop recurrent retrofit; the naive hop curriculum was
+   worse than the first scale-up and likely caused forgetting.
+3. Make the serial JumpRec router agreement-aware and benchmark it as a real
+   inference path, not all budgets in parallel.
+4. Try stronger recurrent cores, especially the 3-core-layer setting, on mixed
+   and 8/4 tasks before making broader architecture claims.

@@ -836,3 +836,123 @@ parallel, which is slower wall-clock than the full recurrent teacher. The
 compute-savings result only becomes an inference-speed result with serial
 early-exit routing: try the cheap jump, verify, and run only the necessary tail
 or full fallback. That is the next engineering target.
+
+## 2026-04-26 - recurrent SmolLM2 controls and ablations
+
+This sweep uses the updated `run_recurrent_smol.py` path where copied JumpRec
+and direct-control decoder blocks are explicitly trainable. That makes this
+section the better reference for the current implementation.
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode retrofit_probe
+modal run run_recurrent_smol.py --mode jumprec_probe
+modal run run_recurrent_smol.py --mode jumprec_probe --seed 101
+modal run run_recurrent_smol.py --mode jumprec_probe --seed 202
+modal run run_recurrent_smol.py --mode direct_probe
+modal run run_recurrent_smol.py --mode direct_probe --seed 101
+modal run run_recurrent_smol.py --mode direct_probe --seed 202
+modal run run_recurrent_smol.py --mode jumprec_no_adapter
+modal run run_recurrent_smol.py --mode jumprec_no_agree
+modal run run_recurrent_smol.py --mode retrofit_no_reinject
+modal run run_recurrent_smol.py --mode retrofit_core1
+modal run run_recurrent_smol.py --mode retrofit_core3
+modal run run_recurrent_smol.py --mode mixed_probe
+modal run run_recurrent_smol.py --mode retrofit_8n4h_curriculum
+```
+
+### Trainable JumpRec vs direct control
+
+All rows use the 6-node / 3-hop textual pointer task. Full recurrent teacher
+cost is 10 core layers: 5 loops x 2 shared core layers.
+
+| Seed | Teacher Full | Jump + 0 | Jump + 1 | Jump + 2 | Jump + 3 | Strict 0.80 | Avg Core Layers | Savings | Full Fallback | Direct 3-Layer |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 97.73% | 87.30% | 98.68% | 99.44% | 99.34% | 99.44% | 1.59 / 10 | 84.14% | 1.00% | 98.36% |
+| 101 | 99.32% | 88.16% | 98.95% | 99.76% | 99.76% | 99.85% | 1.49 / 10 | 85.05% | 0.10% | 99.49% |
+| 202 | 99.83% | 95.21% | 99.98% | 100.00% | 99.95% | 100.00% | 1.17 / 10 | 88.26% | 0.00% | 99.44% |
+| Mean | 98.96% | 90.23% | 99.20% | 99.73% | 99.68% | 99.76% | 1.42 / 10 | 85.82% | 0.37% | 99.10% |
+| Stdev | 1.09% | 4.34% | 0.68% | 0.28% | 0.31% | 0.29% | 0.22 | 2.16% | 0.55% | 0.63% |
+
+Timing, H100 batch size 64:
+
+| Seed | Full Teacher | All JumpRec Budgets | Serial JumpRec 0.80 |
+|---:|---:|---:|---:|
+| 42 | 21.06 ms | 24.89 ms | 21.57 ms |
+| 101 | 21.70 ms | 26.07 ms | 17.58 ms |
+| 202 | 21.01 ms | 24.49 ms | 13.01 ms |
+| Mean | 21.25 ms | 25.15 ms | 17.39 ms |
+
+The serial timing is a first implementation, not a final router. It omits the
+agreement check used by strict accuracy evaluation and uses subset routing
+inside a small batch, so the wall-clock numbers are noisy. Still, it is the
+first run where the adaptive path is sometimes faster than the full recurrent
+teacher rather than only cheaper in counted core layers.
+
+Interpretation:
+
+Trainable JumpRec is a much stronger operating point than the earlier
+adapter-only path: strict fallback reaches 99.76% mean accuracy while using
+only 1.42 of 10 recurrent core layers on average. That is about 85.8% recurrent
+core-layer savings.
+
+The direct baseline is the main warning label. A simple 3-copied-layer
+non-recurrent control reaches 99.10% mean accuracy at 3 of 10 core layers. That
+does not erase the JumpRec result, because JumpRec is slightly more accurate
+and uses less than half the direct control's core layers. But it does mean the
+6/3 task is now too easy to be the headline. Future claims need harder tasks
+where the direct control cannot nearly solve the problem.
+
+### Vanilla recurrent early exit
+
+Across the 6/3 teacher runs, naive confidence-based early exit is badly
+miscalibrated. Thresholds 0.80, 0.90, and 0.95 all exit after one loop on all
+examples, giving only about 49-51% accuracy while reporting 80% core-layer
+savings. This confirms that the verifier/fallback machinery is not optional:
+raw softmax confidence is not a reliable router here.
+
+### Ablations and harder probes
+
+| Mode | Full Teacher | Strict 0.80 | Avg Core Layers | Savings | Key Result |
+|---|---:|---:|---:|---:|---|
+| `jumprec_probe` | 97.73% | 99.44% | 1.59 / 10 | 84.14% | Baseline trainable JumpRec. |
+| `jumprec_no_adapter` | 97.73% | 99.68% | 1.55 / 10 | 84.52% | Temp adapter is not needed on this easy 6/3 task. |
+| `jumprec_no_agree` | 97.73% | 99.22% | 1.55 / 10 | 84.52% | Agreement check slightly improves accuracy. |
+| `retrofit_no_reinject` | 99.37% | n/a | n/a | n/a | Input reinjection is not required for easy 6/3. |
+| `retrofit_core1` | 96.00% | n/a | n/a | n/a | One core layer is cheaper but loses accuracy. |
+| `retrofit_core3` | 99.98% | n/a | n/a | n/a | Three core layers nearly solve 6/3, at higher full-loop cost. |
+| `mixed_probe` | 86.08% | n/a | n/a | n/a | Four-task robustness is not solved. |
+| `retrofit_8n4h_curriculum` | 73.51% | n/a | n/a | n/a | Simple hop curriculum made 8/4 worse. |
+
+Mixed task breakdown:
+
+| Task | Accuracy |
+|---|---:|
+| forward | 88.02% |
+| inverse | 84.61% |
+| alternate | 100.00% |
+| square | 71.97% |
+
+8-node / 4-hop curriculum breakdown:
+
+| Hop | Accuracy |
+|---:|---:|
+| 1 | 100.00% |
+| 2 | 99.55% |
+| 3 | 56.67% |
+| 4 | 34.93% |
+
+Interpretation:
+
+The strongest positive signal is now clear: JumpRec can learn an amortized
+transition over a recurrent SmolLM2 state space, and a verifier can route most
+examples through a very short path. The strongest negative signal is just as
+clear: this has not yet become a robust local-LLM architecture. Mixed recurrence
+families and 8/4 scaling both expose brittleness, and the direct control is
+strong enough that easy pointer tasks are no longer sufficient evidence.
+
+The next research move should make the benchmark harder and more architecture
+honest before scaling claims: use mixed recurrence tasks as the default, keep
+the direct 3-layer control in every table, try stronger recurrent cores on the
+harder probes, and improve routing with agreement-aware serial inference.

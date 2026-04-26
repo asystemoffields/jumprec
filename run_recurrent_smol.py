@@ -71,13 +71,20 @@ class Config:
     log_every: int = 250
     timing_batches: int = 16
     reinject_init: float = 0.20
+    use_reinject: bool = True
+    mixed_tasks: bool = False
+    curriculum_hops: bool = False
     jump_steps: int = 0
     max_correct: int = 3
     jump_layers: int = 1
     jump_lr: float = 4e-4
     verifier_loss_weight: float = 0.2
     use_temp_adapter: bool = True
+    strict_need_agreement: bool = True
     adapter_rank: int = 8
+    direct_steps: int = 0
+    direct_layers: int = 3
+    direct_lr: float = 4e-4
 
     @property
     def loop_steps(self) -> int:
@@ -106,12 +113,49 @@ def config_for_mode(mode: str) -> Config:
         cfg.jump_steps = 4
         cfg.max_correct = 2
         cfg.jump_layers = 1
+        cfg.direct_steps = 4
+        cfg.direct_layers = 2
     elif mode == "retrofit_probe":
         pass
     elif mode == "jumprec_probe":
         cfg.jump_steps = 3500
         cfg.max_correct = 3
         cfg.jump_layers = 1
+        cfg.eval_batches = 64
+        cfg.log_every = 250
+    elif mode == "jumprec_no_adapter":
+        cfg.jump_steps = 3500
+        cfg.use_temp_adapter = False
+        cfg.eval_batches = 64
+        cfg.log_every = 250
+    elif mode == "jumprec_no_agree":
+        cfg.jump_steps = 3500
+        cfg.strict_need_agreement = False
+        cfg.eval_batches = 64
+        cfg.log_every = 250
+    elif mode == "direct_probe":
+        cfg.direct_steps = 3500
+        cfg.direct_layers = 3
+        cfg.eval_batches = 64
+        cfg.log_every = 250
+    elif mode == "retrofit_no_reinject":
+        cfg.use_reinject = False
+        cfg.reinject_init = 1e-4
+        cfg.eval_batches = 64
+    elif mode == "retrofit_core1":
+        cfg.core_layers = 1
+        cfg.coda_start = 28
+        cfg.coda_layers = 2
+        cfg.eval_batches = 64
+    elif mode == "retrofit_core3":
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.eval_batches = 64
+    elif mode == "mixed_probe":
+        cfg.mixed_tasks = True
+        cfg.final_steps = 3500
+        cfg.recurrent_steps = 5000
         cfg.eval_batches = 64
         cfg.log_every = 250
     elif mode == "retrofit_8n4h":
@@ -122,6 +166,15 @@ def config_for_mode(mode: str) -> Config:
         cfg.recurrent_steps = 5000
         cfg.eval_batches = 64
         cfg.log_every = 250
+    elif mode == "retrofit_8n4h_curriculum":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.curriculum_hops = True
+        cfg.final_steps = 4500
+        cfg.recurrent_steps = 6500
+        cfg.eval_batches = 64
+        cfg.log_every = 500
     elif mode == "retrofit_8n4h_unfreeze":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -185,33 +238,53 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     print(f"[config] {json.dumps(asdict(cfg), indent=2)}")
 
     letters = [chr(ord("A") + i) for i in range(cfg.n_nodes)]
+    task_names = ["forward", "inverse", "alternate", "square"] if cfg.mixed_tasks else ["forward"]
 
-    def make_examples(batch_size: int):
+    def make_examples(batch_size: int, active_max_hops: int | None = None):
         texts = []
         targets_l = []
         step_targets_l = []
         hops_l = []
+        tasks_l = []
+        max_hops = active_max_hops or cfg.max_hops
         for _ in range(batch_size):
             perm = list(range(cfg.n_nodes))
             random.shuffle(perm)
+            inv = [0 for _ in range(cfg.n_nodes)]
+            for i, j in enumerate(perm):
+                inv[j] = i
             start = random.randrange(cfg.n_nodes)
-            hops = random.randint(1, cfg.max_hops)
+            hops = random.randint(1, max_hops)
+            task_id = random.randrange(len(task_names))
             cur = start
             step_targets = []
             for step in range(cfg.loop_steps):
+                fwd = perm[cur]
+                invn = inv[cur]
+                if task_id == 0:
+                    nxt = fwd
+                elif task_id == 1:
+                    nxt = invn
+                elif task_id == 2:
+                    nxt = fwd if step % 2 == 0 else invn
+                else:
+                    nxt = perm[fwd]
                 if hops > step:
-                    cur = perm[cur]
+                    cur = nxt
                 step_targets.append(cur)
             mapping = " ".join(f"{letters[i]}->{letters[perm[i]]}" for i in range(cfg.n_nodes))
-            text = f"Task: forward. Map: {mapping}. Start: {letters[start]}. Hops: {hops}. Answer:"
+            task = task_names[task_id]
+            text = f"Task: {task}. Map: {mapping}. Start: {letters[start]}. Hops: {hops}. Answer:"
             texts.append(text)
             targets_l.append(step_targets[-1])
             step_targets_l.append(step_targets)
             hops_l.append(hops)
+            tasks_l.append(task_id)
         target = torch.tensor(targets_l, dtype=torch.long, device=device)
         step_targets = torch.tensor(step_targets_l, dtype=torch.long, device=device)
         hops = torch.tensor(hops_l, dtype=torch.long, device=device)
-        return texts, target, step_targets, hops
+        task_ids = torch.tensor(tasks_l, dtype=torch.long, device=device)
+        return texts, target, step_targets, hops, task_ids
 
     class FakeDecoderLayer(nn.Module):
         def __init__(self):
@@ -336,7 +409,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         def loop_once(self, hidden, input_state, layer_mask, position_ids, position_embeddings, step_idx: int):
             idx = min(step_idx, cfg.loop_steps - 1)
             gate = torch.sigmoid(self.reinject_logit).to(hidden.dtype)
-            hidden = hidden + self.loop_emb[idx].view(1, 1, -1).to(hidden.dtype) + gate * input_state
+            reinject = gate * input_state if cfg.use_reinject else 0.0
+            hidden = hidden + self.loop_emb[idx].view(1, 1, -1).to(hidden.dtype) + reinject
             return self.run_layers(self.core, hidden, layer_mask, position_ids, position_embeddings)
 
         def run_steps_from(
@@ -415,10 +489,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             lengths = batch["attention_mask"].sum(dim=1) - 1
             return batch["input_ids"], batch["attention_mask"].bool(), lengths
 
-    def batch_encoded(batch_size: int):
-        texts, target, step_targets, hops = make_examples(batch_size)
+    def batch_encoded(batch_size: int, active_max_hops: int | None = None):
+        texts, target, step_targets, hops, task_ids = make_examples(batch_size, active_max_hops)
         input_ids, attention_mask, lengths = encode_texts(texts)
-        return input_ids, attention_mask, lengths, target, step_targets, hops
+        return input_ids, attention_mask, lengths, target, step_targets, hops, task_ids
 
     def accuracy(logits, target) -> float:
         return (logits.argmax(dim=-1) == target).float().mean().item()
@@ -435,10 +509,17 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     optim_groups.append({"params": head_params, "lr": cfg.lr_head, "weight_decay": 0.0})
     opt = torch.optim.AdamW(optim_groups)
 
+    def active_hops_for_step(step: int, total_steps: int) -> int | None:
+        if not cfg.curriculum_hops:
+            return None
+        phase = max(1, total_steps // cfg.max_hops)
+        return min(cfg.max_hops, 1 + (step - 1) // phase)
+
     t0 = time.time()
     model.train()
     for step in range(1, cfg.final_steps + 1):
-        input_ids, attention_mask, lengths, target, _, _ = batch_encoded(cfg.batch_size)
+        active_hops = active_hops_for_step(step, cfg.final_steps)
+        input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size, active_hops)
         logits = model(input_ids, attention_mask, lengths, cfg.loop_steps)
         loss = F.cross_entropy(logits, target)
         opt.zero_grad()
@@ -449,13 +530,15 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             print(
                 f"  final step {step:5d}/{cfg.final_steps} "
                 f"loss {loss.item():.4f} acc {accuracy(logits, target)*100:.1f}% "
+                f"hops {active_hops or cfg.max_hops} "
                 f"gate {torch.sigmoid(model.reinject_logit).item():.3f} "
                 f"elapsed {time.time()-t0:.1f}s",
                 flush=True,
             )
 
     for step in range(1, cfg.recurrent_steps + 1):
-        input_ids, attention_mask, lengths, target, step_targets, _ = batch_encoded(cfg.batch_size)
+        active_hops = active_hops_for_step(step, cfg.recurrent_steps)
+        input_ids, attention_mask, lengths, target, step_targets, _, _ = batch_encoded(cfg.batch_size, active_hops)
         logits_by_loop = model.collect_logits(input_ids, attention_mask, lengths, cfg.loop_steps, include_zero=False)
         losses = []
         for i, logits_i in enumerate(logits_by_loop):
@@ -473,6 +556,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 f"  recur step {step:5d}/{cfg.recurrent_steps} "
                 f"loss {loss.item():.4f} one {accuracy(one_logits, target)*100:.1f}% "
                 f"full {accuracy(full_logits, target)*100:.1f}% "
+                f"hops {active_hops or cfg.max_hops} "
                 f"elapsed {time.time()-t0:.1f}s",
                 flush=True,
             )
@@ -482,9 +566,17 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         final_acc = [0.0 for _ in range(cfg.loop_steps + 1)]
         step_acc = [None] + [0.0 for _ in range(cfg.loop_steps)]
         by_hop = {str(i): [] for i in range(1, cfg.max_hops + 1)}
+        by_task = {name: [] for name in task_names}
+        thresholds = [(0.80, "080"), (0.90, "090"), (0.95, "095")]
+        exit_metrics = {}
+        for _, suffix in thresholds:
+            exit_metrics[f"early_{suffix}_acc"] = 0.0
+            exit_metrics[f"early_{suffix}_avg_loops"] = 0.0
+            exit_metrics[f"early_{suffix}_full_loop_rate"] = 0.0
+            exit_metrics[f"early_{suffix}_core_savings_vs_full_pct"] = 0.0
         with torch.no_grad():
             for _ in range(cfg.eval_batches):
-                input_ids, attention_mask, lengths, target, step_targets, hops = batch_encoded(cfg.batch_size)
+                input_ids, attention_mask, lengths, target, step_targets, hops, task_ids = batch_encoded(cfg.batch_size)
                 logits_by_loop = model.collect_logits(
                     input_ids, attention_mask, lengths, cfg.loop_steps, include_zero=True
                 )
@@ -498,13 +590,49 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     mask = hops == hop
                     if mask.any():
                         by_hop[str(hop)].append((full_pred[mask] == target[mask]).float().mean().item())
+                for task_id, name in enumerate(task_names):
+                    mask = task_ids == task_id
+                    if mask.any():
+                        by_task[name].append((full_pred[mask] == target[mask]).float().mean().item())
+                logits_stack = torch.stack(logits_by_loop[1:], dim=0)
+                pred_stack = torch.stack(preds[1:], dim=0)
+                probs = F.softmax(logits_stack, dim=-1)
+                top2 = probs.topk(2, dim=-1).values
+                margin_stack = top2[:, :, 0] - top2[:, :, 1]
+                max_prob_stack = top2[:, :, 0]
+                for threshold, suffix in thresholds:
+                    trusted = torch.zeros_like(target, dtype=torch.bool)
+                    chosen_loops = torch.full_like(target, cfg.loop_steps)
+                    pred_exit = full_pred
+                    for i in range(cfg.loop_steps):
+                        accept = (
+                            (~trusted)
+                            & (max_prob_stack[i] >= threshold)
+                            & (margin_stack[i] >= 0.05)
+                        )
+                        loop_count = torch.full_like(chosen_loops, i + 1)
+                        chosen_loops = torch.where(accept, loop_count, chosen_loops)
+                        pred_exit = torch.where(accept, pred_stack[i], pred_exit)
+                        trusted = trusted | accept
+                    exit_metrics[f"early_{suffix}_acc"] += (pred_exit == target).float().mean().item()
+                    exit_metrics[f"early_{suffix}_avg_loops"] += chosen_loops.float().mean().item()
+                    exit_metrics[f"early_{suffix}_full_loop_rate"] += (~trusted).float().mean().item()
         model.train()
         final_acc = [x / cfg.eval_batches for x in final_acc]
+        for k in list(exit_metrics):
+            exit_metrics[k] /= cfg.eval_batches
+        for _, suffix in thresholds:
+            exit_metrics[f"early_{suffix}_avg_core_layers"] = (
+                exit_metrics[f"early_{suffix}_avg_loops"] * float(cfg.core_layers)
+            )
+            exit_metrics[f"early_{suffix}_core_savings_vs_full_pct"] = (
+                1.0 - exit_metrics[f"early_{suffix}_avg_loops"] / float(cfg.loop_steps)
+            ) * 100.0
         step_acc_out = {
             str(i): (step_acc[i] / cfg.eval_batches if i > 0 else None)
             for i in range(cfg.loop_steps + 1)
         }
-        return {
+        out = {
             "final_acc_by_loops": {str(i): final_acc[i] for i in range(cfg.loop_steps + 1)},
             "step_acc_by_loops": step_acc_out,
             "zero_loop_acc": final_acc[0],
@@ -513,14 +641,28 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             "loop_gain_vs_zero": final_acc[-1] - final_acc[0],
             "loop_gain_vs_one": final_acc[-1] - final_acc[1],
             "full_by_hop": {k: (sum(v) / len(v) if v else None) for k, v in by_hop.items()},
+            "full_by_task": {k: (sum(v) / len(v) if v else None) for k, v in by_task.items()},
             "reinject_gate": torch.sigmoid(model.reinject_logit).item(),
         }
+        out.update(exit_metrics)
+        return out
 
     eval_summary = eval_model()
     print(f"[eval] {json.dumps(eval_summary, indent=2)}")
 
+    def teacher_collect(input_ids, attention_mask, lengths):
+        state0, layer_mask, position_ids, position_embeddings = model.encode(input_ids, attention_mask)
+        hidden = state0
+        states = []
+        for i in range(cfg.loop_steps):
+            hidden = model.loop_once(hidden, state0, layer_mask, position_ids, position_embeddings, i)
+            states.append(hidden)
+        logits = model.classify_state(hidden, lengths, layer_mask, position_ids, position_embeddings)
+        return state0, layer_mask, position_ids, position_embeddings, states, logits
+
     jumprec = None
     jump_summary = None
+    direct_summary = None
     if cfg.jump_steps > 0:
         for p in model.parameters():
             p.requires_grad_(False)
@@ -556,6 +698,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 self.teacher = teacher
                 source_layers = [teacher.core[i % len(teacher.core)] for i in range(cfg.jump_layers)]
                 self.jump_blocks = nn.ModuleList([copy.deepcopy(layer) for layer in source_layers])
+                for p in self.jump_blocks.parameters():
+                    p.requires_grad_(True)
                 self.landing_emb = nn.Parameter(torch.zeros(cfg.max_correct + 1, cfg.d_model))
                 self.adapter = WindowAdapter() if cfg.use_temp_adapter else None
                 self.norm = nn.LayerNorm(cfg.d_model)
@@ -626,6 +770,37 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     "verify": verify,
                 }
 
+            def forward_budget_encoded(
+                self,
+                state0,
+                layer_mask,
+                position_ids,
+                position_embeddings,
+                lengths,
+                corrections: int,
+            ):
+                landing = self.jump(state0, layer_mask, position_ids, position_embeddings, lengths, corrections)
+                final = self.teacher.run_steps_from(
+                    landing,
+                    state0,
+                    layer_mask,
+                    position_ids,
+                    position_embeddings,
+                    cfg.loop_steps - corrections,
+                    corrections,
+                )
+                final_logits = self.teacher.classify_state(
+                    final,
+                    lengths,
+                    layer_mask,
+                    position_ids,
+                    position_embeddings,
+                )
+                verifier_logit = self.verifiers[corrections](
+                    self.verifier_features(final, final_logits, lengths)
+                ).squeeze(-1)
+                return final_logits, verifier_logit
+
         def teacher_collect(input_ids, attention_mask, lengths):
             state0, layer_mask, position_ids, position_embeddings = model.encode(input_ids, attention_mask)
             hidden = state0
@@ -642,7 +817,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         t1 = time.time()
         jumprec.train()
         for step in range(1, cfg.jump_steps + 1):
-            input_ids, attention_mask, lengths, target, _, _ = batch_encoded(cfg.batch_size)
+            input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
             with torch.no_grad():
                 state0, layer_mask, position_ids, position_embeddings, teacher_states, teacher_logits = teacher_collect(
                     input_ids,
@@ -688,7 +863,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 metrics[f"strict_{suffix}_fallback_avg_core_layers"] = 0.0
             with torch.no_grad():
                 for _ in range(cfg.eval_batches):
-                    input_ids, attention_mask, lengths, target, _, _ = batch_encoded(cfg.batch_size)
+                    input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
                     state0, layer_mask, position_ids, position_embeddings, _, teacher_logits = teacher_collect(
                         input_ids,
                         attention_mask,
@@ -714,12 +889,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         chosen = torch.full_like(target, cfg.loop_steps)
                         pred_fb = full_pred
                         for c in range(cfg.max_correct + 1):
+                            agree_ok = agree_stack[c] if cfg.strict_need_agreement else torch.ones_like(trusted)
                             accept = (
                                 (~trusted)
                                 & (verify_stack[c] >= threshold)
                                 & (margin_stack[c] >= 0.05)
                                 & (max_prob_stack[c] >= 0.45)
-                                & agree_stack[c]
+                                & agree_ok
                             )
                             chosen = torch.where(accept, torch.full_like(chosen, c), chosen)
                             pred_fb = torch.where(accept, pred_stack[c], pred_fb)
@@ -752,6 +928,71 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         jump_summary = eval_jumprec()
         print(f"[jumprec eval] {json.dumps(jump_summary, indent=2)}")
 
+    if cfg.direct_steps > 0:
+        for p in model.parameters():
+            p.requires_grad_(False)
+        model.eval()
+
+        class DirectControl(nn.Module):
+            def __init__(self, teacher: RecurrentSmol):
+                super().__init__()
+                source_layers = [teacher.core[i % len(teacher.core)] for i in range(cfg.direct_layers)]
+                self.blocks = nn.ModuleList([copy.deepcopy(layer) for layer in source_layers])
+                for p in self.blocks.parameters():
+                    p.requires_grad_(True)
+                self.teacher = teacher
+
+            def forward_encoded(self, state0, layer_mask, position_ids, position_embeddings, lengths):
+                hidden = self.teacher.run_layers(self.blocks, state0, layer_mask, position_ids, position_embeddings)
+                return self.teacher.classify_state(hidden, lengths, layer_mask, position_ids, position_embeddings)
+
+        direct = DirectControl(model).to(device)
+        print(f"[direct] trainable params={sum(p.numel() for p in direct.parameters() if p.requires_grad)/1e6:.3f}M")
+        opt_d = torch.optim.AdamW([p for p in direct.parameters() if p.requires_grad], lr=cfg.direct_lr)
+        t2 = time.time()
+        direct.train()
+        for step in range(1, cfg.direct_steps + 1):
+            input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
+            with torch.no_grad():
+                state0, layer_mask, position_ids, position_embeddings, _, _ = teacher_collect(
+                    input_ids,
+                    attention_mask,
+                    lengths,
+                )
+            logits = direct.forward_encoded(state0.detach(), layer_mask, position_ids, position_embeddings, lengths)
+            loss = F.cross_entropy(logits, target)
+            opt_d.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(direct.parameters(), 1.0)
+            opt_d.step()
+            if step % cfg.log_every == 0 or step == cfg.direct_steps:
+                print(
+                    f"  direct step {step:5d}/{cfg.direct_steps} "
+                    f"loss {loss.item():.4f} acc {accuracy(logits, target)*100:.1f}% "
+                    f"elapsed {time.time()-t2:.1f}s",
+                    flush=True,
+                )
+
+        direct.eval()
+        acc = 0.0
+        with torch.no_grad():
+            for _ in range(cfg.eval_batches):
+                input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
+                state0, layer_mask, position_ids, position_embeddings, _, _ = teacher_collect(
+                    input_ids,
+                    attention_mask,
+                    lengths,
+                )
+                acc += accuracy(direct.forward_encoded(state0, layer_mask, position_ids, position_embeddings, lengths), target)
+        direct_summary = {
+            "direct_acc": acc / cfg.eval_batches,
+            "direct_layers": float(cfg.direct_layers),
+            "direct_core_savings_vs_full_pct": (
+                1.0 - float(cfg.direct_layers) / float(cfg.loop_steps * cfg.core_layers)
+            ) * 100.0,
+        }
+        print(f"[direct eval] {json.dumps(direct_summary, indent=2)}")
+
     def benchmark():
         if cfg.timing_batches <= 0:
             return {}
@@ -763,12 +1004,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         def time_fn(fn):
             with torch.no_grad():
                 for _ in range(2):
-                    input_ids, attention_mask, lengths, _, _, _ = batch_encoded(cfg.batch_size)
+                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(cfg.batch_size)
                     fn(input_ids, attention_mask, lengths)
                 sync()
                 start = time.perf_counter()
                 for _ in range(cfg.timing_batches):
-                    input_ids, attention_mask, lengths, _, _, _ = batch_encoded(cfg.batch_size)
+                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(cfg.batch_size)
                     fn(input_ids, attention_mask, lengths)
                 sync()
                 return 1000.0 * (time.perf_counter() - start) / cfg.timing_batches
@@ -783,6 +1024,55 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             out["jumprec_all_budgets_ms_per_batch"] = time_fn(
                 lambda ids, mask, lens: jumprec.forward_encoded(*model.encode(ids, mask), lens)
             )
+
+            def serial_jumprec(ids, mask, lens, threshold: float = 0.80):
+                state0, layer_mask, position_ids, position_embeddings = model.encode(ids, mask)
+                open_idx = torch.arange(ids.size(0), device=ids.device)
+                last = None
+
+                def take_batch(x, idx):
+                    if x is None:
+                        return None
+                    if x.size(0) == ids.size(0):
+                        return x.index_select(0, idx)
+                    return x
+
+                for corrections in range(cfg.max_correct + 1):
+                    if open_idx.numel() == 0:
+                        break
+                    sub_state0 = state0.index_select(0, open_idx)
+                    sub_mask = take_batch(layer_mask, open_idx)
+                    sub_pos = take_batch(position_ids, open_idx)
+                    sub_emb = tuple(take_batch(t, open_idx) for t in position_embeddings) if position_embeddings else None
+                    sub_lens = lens.index_select(0, open_idx)
+                    logits, verify = jumprec.forward_budget_encoded(
+                        sub_state0,
+                        sub_mask,
+                        sub_pos,
+                        sub_emb,
+                        sub_lens,
+                        corrections,
+                    )
+                    probs = F.softmax(logits, dim=-1)
+                    top2 = probs.topk(2, dim=-1).values
+                    accept = (
+                        (torch.sigmoid(verify) >= threshold)
+                        & ((top2[:, 0] - top2[:, 1]) >= 0.05)
+                        & (top2[:, 0] >= 0.45)
+                    )
+                    last = logits
+                    open_idx = open_idx[~accept]
+                if open_idx.numel() > 0:
+                    sub_state0 = state0.index_select(0, open_idx)
+                    sub_mask = take_batch(layer_mask, open_idx)
+                    sub_pos = take_batch(position_ids, open_idx)
+                    sub_emb = tuple(take_batch(t, open_idx) for t in position_embeddings) if position_embeddings else None
+                    sub_lens = lens.index_select(0, open_idx)
+                    full = model.run_steps_from(sub_state0, sub_state0, sub_mask, sub_pos, sub_emb, 0, cfg.loop_steps)
+                    last = model.classify_state(full, sub_lens, sub_mask, sub_pos, sub_emb)
+                return last
+
+            out["jumprec_serial_080_ms_per_batch"] = time_fn(serial_jumprec)
         model.train()
         return out
 
@@ -793,6 +1083,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         "config": asdict(cfg),
         "eval": eval_summary,
         "jumprec_eval": jump_summary,
+        "direct_eval": direct_summary,
         "timing": timing_summary,
     }
 
@@ -834,7 +1125,15 @@ if __name__ == "__main__":
             "dry",
             "retrofit_probe",
             "jumprec_probe",
+            "jumprec_no_adapter",
+            "jumprec_no_agree",
+            "direct_probe",
+            "retrofit_no_reinject",
+            "retrofit_core1",
+            "retrofit_core3",
+            "mixed_probe",
             "retrofit_8n4h",
+            "retrofit_8n4h_curriculum",
             "retrofit_8n4h_unfreeze",
             "retrofit_12n6h",
             "retrofit_unfreeze",
