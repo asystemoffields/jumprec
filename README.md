@@ -42,10 +42,11 @@ and prior 95.97% direct-control mean. But serial timing averages 35.95 ms/batch
 versus 28.39 ms/batch for the full teacher. The next question is whether this
 becomes favorable at batch size 1, which is closer to local interactive use.
 
-The first batch-1 probe is strongly positive on seed 42: the full recurrent
-teacher takes 17.51 ms, while no-agreement JumpRec at threshold 0.90 takes 7.37
-ms with 99.17% accuracy. That is not seed-confirmed yet, but it matches the
-project's local-inference target better than the batch-64 throughput benchmark.
+The batch-1 timing result is seed-confirmed and now the strongest local-target
+result. At threshold 0.90, agreement-free JumpRec reaches 98.29% mean accuracy
+while using 2.40 of 15 recurrent core layers, and runs in 8.81 ms versus 18.81
+ms for the full recurrent teacher. That is a 2.13x batch-1 speedup while also
+beating the full teacher and prior direct-control accuracies.
 
 The main remaining caution is robustness. The 8-node / 4-hop setting is still
 limited by teacher quality and max-depth failures; JumpRec cannot reliably
@@ -96,11 +97,12 @@ modal run run_recurrent_smol.py --mode mixed_probe
 
 ## Current Next Steps
 
-1. Seed-confirm the agreement-free batch-1 timing result on seeds 101 and 202.
-2. If batch-1 timing holds, make this the current local-inference headline and
-   only then improve implementation polish.
-3. If batch-1 timing fails, work on a fused/static router path rather than more
-   verifier calibration.
+1. Make the batch-1 mixed/core3 result the current local-inference headline,
+   while keeping the synthetic-task caveat explicit.
+2. Add a timing sweep across batch sizes from a single run, so the crossover
+   between local latency and throughput batching is measured directly.
+3. Save/reload trained recurrent and JumpRec checkpoints to avoid retraining
+   for every timing or calibration probe.
 4. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
    better balanced curriculum; core depth alone did not solve 4-hop cases.
 5. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct

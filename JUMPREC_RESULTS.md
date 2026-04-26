@@ -1210,9 +1210,47 @@ small GPU calls inside a throughput benchmark. Batch size 1 reverses that: the
 serial no-agreement router is about 2.37x faster than the full recurrent
 teacher on seed 42 while also beating its accuracy.
 
-This still needs seed confirmation. If seeds 101 and 202 show the same timing
-shape, the current best claim becomes narrow but real: on a harder mixed
-textual recurrence task, a recurrent SmolLM2 retrofit plus JumpRec can improve
-accuracy over the full loop while cutting local-style batch-1 latency
-substantially. If they do not, timing variance rather than model behavior is
-the next target.
+Seed confirmation:
+
+```text
+modal run run_recurrent_smol.py --mode mixed_core3_router_no_agree_b1 --seed 101
+modal run run_recurrent_smol.py --mode mixed_core3_router_no_agree_b1 --seed 202
+```
+
+Agreement-free router, threshold 0.90, batch-1 timing:
+
+| Seed | Teacher Full | Router Acc | Avg Core Layers | Savings | Full Timing | Serial Timing | Speedup |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 98.71% | 99.17% | 2.11 / 15 | 85.94% | 17.51 ms | 7.37 ms | 2.37x |
+| 101 | 98.49% | 98.58% | 2.25 / 15 | 85.01% | 23.33 ms | 10.80 ms | 2.16x |
+| 202 | 96.56% | 97.12% | 2.85 / 15 | 81.03% | 15.60 ms | 8.26 ms | 1.89x |
+| Mean | 97.92% | 98.29% | 2.40 / 15 | 84.00% | 18.81 ms | 8.81 ms | 2.13x |
+
+Threshold sweep, mean batch-1 timing over seeds:
+
+| Threshold | Router Acc | Avg Core Layers | Savings | Serial Timing | Speedup vs Full |
+|---:|---:|---:|---:|---:|---:|
+| 0.80 | 97.88% | 2.22 / 15 | 85.23% | 7.84 ms | 2.40x |
+| 0.90 | 98.29% | 2.40 / 15 | 84.00% | 8.81 ms | 2.13x |
+| 0.95 | 98.40% | 2.60 / 15 | 82.70% | 9.53 ms | 1.97x |
+
+Agreement-filtered threshold 0.80 also becomes viable at batch size 1: it
+averages about 98.74% accuracy and 15.22 ms, still faster than the 18.81 ms
+full-loop mean. The no-agreement threshold-0.90 path remains the better
+latency/accuracy trade-off for local inference.
+
+Interpretation:
+
+This is now the strongest result in the project. The batch-64 throughput result
+did not convert counted savings into speed, but the local-style batch-1 result
+does. On a harder mixed textual recurrence task, recurrent SmolLM2 plus JumpRec
+beats the full recurrent teacher's accuracy, beats the shallow direct control,
+uses about 2.40 of 15 recurrent core layers, and runs about 2.13x faster than
+the full recurrent teacher at batch size 1 on H100.
+
+The claim should stay narrow. This is still a synthetic textual recurrence
+benchmark, not general language modeling, and it is measured on H100 rather
+than a consumer local GPU. But it is exactly the first shape we wanted: a small
+pretrained-LM retrofit with a recurrent state space where a learned jump/router
+can spend much less compute on easier cases while preserving or improving hard
+task accuracy.
