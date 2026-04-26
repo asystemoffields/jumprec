@@ -1465,3 +1465,104 @@ is roughly break-even, and larger batches lose with the current serial router.
 The main caveat is seeds. This is one seed. It is strong enough to justify
 seed-confirming the hard-hop teacher plus JumpRec path, but not yet enough for a
 paper-level claim.
+
+## 2026-04-26 - hard-hop teacher seed confirmation
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_teacher --seed 202
+```
+
+Teacher results under uniform hop eval:
+
+| Seed | Full Teacher | Hop 1 | Hop 2 | Hop 3 | Hop 4 | Direct Control |
+|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 94.87% | 99.89% | 95.02% | 88.68% | 95.74% | 77.28% |
+| 101 | 96.14% | 99.80% | 98.08% | 93.30% | 93.25% | 61.80% |
+| 202 | 76.87% | 99.17% | 73.08% | 50.41% | 86.37% | 58.85% |
+| Mean | 89.30% | 99.62% | 88.73% | 77.46% | 91.79% | 65.31% |
+
+Interpretation:
+
+This partially confirms the hard-hop teacher repair but exposes a stability
+problem. Seeds 42 and 101 are strong and show the intended behavior: a competent
+recurrent teacher, high max-hop accuracy, and a large gap over direct control.
+Seed 202 does not confirm; it improves hop 4 compared with the old teacher but
+collapses badly on hop 3 and is not a good JumpRec teacher.
+
+So the updated claim is narrower:
+
+- Validated: hard-hop replay/loss weighting can repair the 8/4 teacher weakness.
+- Not yet validated: the recipe is seed-robust.
+- Next action: run JumpRec only on strong teacher seed 101, and treat seed 202
+  as a teacher-stability failure rather than a JumpRec target.
+
+Likely stability fixes to test next:
+
+- lower max-hop replay from 70% to around 50% so hop 3 is less starved;
+- use stratified hard replay instead of only max-hop replay, e.g. explicit hop
+  weights for hops 2/3/4;
+- checkpoint by uniform validation accuracy rather than final training step;
+- consider a short uniform fine-tune after hard-hop training;
+- reset seeds before direct-control training so the direct baseline is less
+  dependent on whether JumpRec trained before it.
+
+## 2026-04-26 - JumpRec on second repaired 8/4 teacher
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_jumprec --seed 101
+```
+
+Seed 101 loaded the repaired teacher checkpoint and confirmed the JumpRec
+behavior seen on seed 42. Seed 202 was not run through JumpRec because its
+teacher was weak.
+
+Strong-teacher JumpRec summary:
+
+| Seed | Loaded Teacher | Router 0.90 Acc | Router 0.90 Core | Router 0.90 Savings | Router 0.95 Acc | Router 0.95 Core | Router 0.95 Savings |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 94.71% | 94.73% | 4.70 / 18 | 73.91% | 95.23% | 5.14 / 18 | 71.44% |
+| 101 | 96.06% | 96.55% | 4.18 / 18 | 76.79% | 97.04% | 4.50 / 18 | 75.01% |
+| Mean | 95.39% | 95.64% | 4.44 / 18 | 75.35% | 96.13% | 4.82 / 18 | 73.22% |
+
+Agreement-filtered router:
+
+| Seed | Agreement 0.80 Acc | Avg Core Layers | Savings |
+|---:|---:|---:|---:|
+| 42 | 96.09% | 4.72 / 18 | 73.78% |
+| 101 | 97.51% | 4.14 / 18 | 77.00% |
+| Mean | 96.80% | 4.43 / 18 | 75.39% |
+
+Batch-1 timing for no-agreement threshold 0.90:
+
+| Seed | Full Teacher | Router 0.90 | Speedup |
+|---:|---:|---:|---:|
+| 42 | 19.64 ms | 10.32 ms | 1.90x |
+| 101 | 21.10 ms | 10.68 ms | 1.98x |
+| Mean | 20.37 ms | 10.50 ms | 1.94x |
+
+Seed-101 batch-size timing for no-agreement threshold 0.90:
+
+| Batch Size | Full Teacher | Router 0.90 | Speedup |
+|---:|---:|---:|---:|
+| 1 | 21.10 ms | 10.68 ms | 1.98x |
+| 2 | 22.46 ms | 13.63 ms | 1.65x |
+| 4 | 21.78 ms | 16.61 ms | 1.31x |
+| 8 | 22.68 ms | 22.90 ms | 0.99x |
+| 16 | 23.20 ms | 27.01 ms | 0.86x |
+| 32 | 23.80 ms | 34.45 ms | 0.69x |
+| 64 | 33.73 ms | 39.71 ms | 0.85x |
+
+Interpretation:
+
+On strong repaired 8/4 teachers, JumpRec now has a two-seed confirmation:
+it matches or beats the full teacher, saves roughly three quarters of counted
+recurrent core compute, and gives a roughly 2x batch-1 speedup. This is a much
+more meaningful hard-case result than the earlier easy/mixed result.
+
+The caveat is equally important: only two of three teacher seeds became strong.
+The bottleneck is now teacher stability, not JumpRec on a good teacher.

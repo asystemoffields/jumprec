@@ -70,6 +70,13 @@ matches or slightly beats the teacher at roughly 4.7-5.1 of 18 recurrent core
 layers, saving about 71-74% counted core compute. Batch-1 timing remains faster,
 but the crossover comes earlier than on the easier mixed task.
 
+Seed confirmation is mixed: seed 101 also produces a strong repaired teacher
+around 96.1%, but seed 202 remains weak around 76.9%, mainly from hop-3
+collapse. The hard-hop repair is therefore real but not yet seed-robust.
+On the two strong repaired teachers, JumpRec matches or beats the full teacher
+while using about 4.4 of 18 recurrent core layers at threshold 0.90, with about
+a 1.9x batch-1 speedup.
+
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
 ## Scaling Constraint
