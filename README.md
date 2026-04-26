@@ -10,20 +10,27 @@ looped model.
 
 ## Current Status
 
-The strongest current result is on a mixed synthetic recurrence suite with four
-transition families over a permutation table: `forward`, `inverse`, `alternate`,
-and `square`.
+The strongest pure JumpRec result is on a mixed synthetic recurrence suite with
+four transition families over a permutation table: `forward`, `inverse`,
+`alternate`, and `square`.
 
 On teacher-solved mixed strict seeds, JumpRec reaches about 99.9% accuracy while
 using about 2.5 block-equivalents instead of 8, saving roughly 69% compute. The
 strict fallback policy sends uncertain examples back through the full loop and
 is exercised in practice.
 
+The strongest pretrained-LM result is now positive: a recurrent-depth
+SmolLM2-135M retrofit solves a 6-node / 3-hop textual pointer task at
+99.60% +/- 0.18% full-loop accuracy across four seeds. On top of that teacher,
+JumpRec reaches 99.11% +/- 0.27% strict-fallback accuracy at threshold 0.80
+while using 4.61 +/- 0.28 recurrent core layers instead of 10, saving
+53.88% +/- 2.75% core-layer compute across three seeds.
+
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
-The pretrained-LM crash tests are currently negative. Frozen SmolLM2 final
-states, input adapters, curriculum warmup, and a latent workspace sidecar have
-not produced a competent looped teacher. The evidence now points toward a true
+The first pretrained-LM crash tests were negative: frozen SmolLM2 final states,
+input adapters, curriculum warmup, and a latent workspace sidecar did not
+produce a competent looped teacher. The successful path was a true
 recurrent-depth LM retrofit rather than another frozen hidden-state wrapper.
 
 Current looped-transformer recipes usually apply recurrence inside the model
@@ -37,6 +44,7 @@ full-loop recurrent model is strong.
 
 - `run_jumprec_v0.py`: Modal/local experiment runner.
 - `run_jumprec_smol.py`: SmolLM2 crash-test runner.
+- `run_recurrent_smol.py`: recurrent-depth SmolLM2 retrofit and JumpRec runner.
 - `JUMPREC_SPEC.md`: architecture sketch and experimental framing.
 - `JUMPREC_RESULTS.md`: run history, tables, and interpretation.
 - `requirements.txt`: Python package dependencies.
@@ -53,14 +61,16 @@ The script guards against accidental heavy local runs. Use Modal for real tests:
 ```bash
 modal run run_jumprec_v0.py --mode quick_c6_no_hidden
 modal run run_jumprec_v0.py --mode quick_mix_strict
+modal run run_recurrent_smol.py --mode retrofit_probe
+modal run run_recurrent_smol.py --mode jumprec_probe
 ```
 
 ## Current Next Steps
 
-1. Build a real recurrent-depth SmolLM2 retrofit: prelude, shared recurrent
-   core, coda, and explicit input reinjection.
-2. Train it with a recurrence curriculum and verify that increasing loops helps
-   before adding JumpRec.
-3. Add JumpRec only after the recurrent full-loop teacher is competent.
-4. Keep the synthetic suite as the regression test; do not make JumpRec claims
-   on SmolLM2 until the full-loop teacher is strong.
+1. Add true serial early-exit inference for JumpRec; all-budget evaluation is
+   still slower wall-clock than the full recurrent teacher.
+2. Improve the 8-node / 4-hop recurrent retrofit; the current small-core model
+   reaches 84.47% full-loop accuracy and struggles on 4-hop cases.
+3. Add direct/non-recurrent baselines for the recurrent SmolLM2 runner.
+4. Keep the synthetic suite as the regression test while scaling the LM-facing
+   benchmarks carefully.

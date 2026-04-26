@@ -676,3 +676,163 @@ scratchpads and toward an actual recurrent-depth LM retrofit:
 
 The synthetic JumpRec results remain promising; the SmolLM2 results say the LM
 interface is still wrong.
+
+## 2026-04-26 - recurrent-depth SmolLM2 retrofit
+
+Code changes:
+
+- Added `run_recurrent_smol.py`.
+- Splits SmolLM2-135M into frozen/trainable prelude, shared recurrent core, and
+  coda blocks.
+- Adds loop-step embeddings and explicit input-state reinjection.
+- Trains with final-answer warmup followed by per-loop recurrence supervision.
+- Adds optional JumpRec over the recurrent SmolLM2 state space.
+
+Commands:
+
+```text
+python run_recurrent_smol.py --local --mode dry
+modal run run_recurrent_smol.py --mode retrofit_probe --seed 42
+modal run run_recurrent_smol.py --mode retrofit_probe --seed 101
+modal run run_recurrent_smol.py --mode retrofit_probe --seed 202
+modal run run_recurrent_smol.py --mode retrofit_probe --seed 303
+modal run run_recurrent_smol.py --mode retrofit_8n4h
+modal run run_recurrent_smol.py --mode retrofit_8n4h_unfreeze
+```
+
+### 6 nodes / 3 hops: recurrent teacher
+
+Configuration:
+
+- Frozen SmolLM2 embeddings and most blocks.
+- Prelude: first 4 SmolLM2 decoder blocks, frozen.
+- Recurrent core: blocks 4-5, trainable and shared across loops.
+- Coda: blocks 28-29, trainable.
+- 5 recurrent loops: 3 task hops plus 2 preserve steps.
+- Trainable parameters: 14.17M.
+
+Results:
+
+| Seed | 0 Loops | 1 Loop | 2 Loops | Full 5 Loops | Gain vs 1 Loop |
+|---:|---:|---:|---:|---:|---:|
+| 42 | 19.70% | 50.54% | 72.14% | 99.34% | 48.80% |
+| 101 | 20.58% | 50.61% | 72.71% | 99.76% | 49.15% |
+| 202 | 19.75% | 49.93% | 72.56% | 99.68% | 49.76% |
+| 303 | 19.19% | 50.10% | 72.00% | 99.63% | 49.54% |
+| Mean | 19.81% | 50.29% | 72.35% | 99.60% | 49.31% |
+| Stdev | 0.58% | 0.33% | 0.34% | 0.18% | 0.43% |
+
+Interpretation:
+
+This is the first positive pretrained-LM result. The task was deliberately
+chosen so recurrent depth should matter: each loop can execute one transition
+through the map. The learned model reflects that structure. One-loop and
+two-loop accuracy remain far below full-loop accuracy, while three or more
+loops solve nearly all examples.
+
+This validates the architectural pivot. Recurrence had to be inside the model
+path; external loops over frozen final hidden states and sidecar workspaces did
+not work.
+
+### 8 nodes / 4 hops: first scale-up
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode retrofit_8n4h
+```
+
+Result:
+
+| Metric | Value |
+|---|---:|
+| 0-loop accuracy | 13.53% |
+| 1-loop accuracy | 39.77% |
+| 2-loop accuracy | 58.86% |
+| 3-loop accuracy | 74.61% |
+| 4-loop accuracy | 84.16% |
+| Full 6-loop accuracy | 84.47% |
+
+By hop:
+
+| Hop | Full-Loop Accuracy |
+|---:|---:|
+| 1 | 100.00% |
+| 2 | 99.88% |
+| 3 | 85.18% |
+| 4 | 54.01% |
+
+Interpretation:
+
+The scale-up preserves the recurrent-depth curve but does not solve the harder
+task. The core weakness is max-depth 4-hop cases. This is the current boundary:
+the small recurrent core learns the iterative algorithm on 6/3, partly scales
+to 8/4, but needs either a stronger training recipe, more recurrence-aware
+regularization, or a better benchmark curriculum before moving to 12/6.
+
+An attempted `retrofit_8n4h_unfreeze` run with 35.41M trainable parameters was
+stopped early after it underperformed the smaller-core run at comparable
+progress. Simply unfreezing more SmolLM2 layers is not an obvious fix.
+
+## 2026-04-26 - JumpRec on recurrent SmolLM2
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode jumprec_probe --seed 42
+modal run run_recurrent_smol.py --mode jumprec_probe --seed 101
+modal run run_recurrent_smol.py --mode jumprec_probe --seed 202
+```
+
+Configuration:
+
+- Same 6-node / 3-hop recurrent SmolLM2 teacher as `retrofit_probe`.
+- Teacher full recurrent core cost: 5 loops x 2 core layers = 10 core layers.
+- JumpRec: one trainable copied decoder layer, landing embeddings, temporary
+  adapter, verifiers, and 0-3 frozen teacher tail loops.
+- JumpRec trainable parameters: 6.99M.
+
+Fixed-budget results:
+
+| Seed | Jump + 0 Tail | Jump + 1 Tail | Jump + 2 Tail | Jump + 3 Tail |
+|---:|---:|---:|---:|---:|
+| 42 | 37.01% | 58.72% | 91.77% | 97.61% |
+| 101 | 40.70% | 59.57% | 95.29% | 98.83% |
+| 202 | 42.70% | 59.20% | 93.99% | 98.90% |
+
+Strict fallback at threshold 0.80:
+
+| Seed | Accuracy | Avg Core Layers | Savings vs Full | Full-Loop Fallback |
+|---:|---:|---:|---:|---:|
+| 42 | 98.80% | 4.92 / 10 | 50.77% | 12.77% |
+| 101 | 99.24% | 4.51 / 10 | 54.91% | 10.35% |
+| 202 | 99.29% | 4.40 / 10 | 55.98% | 9.08% |
+| Mean | 99.11% | 4.61 / 10 | 53.88% | 10.73% |
+| Stdev | 0.27% | 0.28 | 2.75% | 1.87% |
+
+Stricter threshold 0.95:
+
+| Mean Accuracy | Mean Core Layers | Mean Savings |
+|---:|---:|---:|
+| 99.50% +/- 0.23% | 5.41 / 10 | 45.86% +/- 2.98% |
+
+Timing on H100, batch size 64:
+
+| Seed | Full Teacher | All JumpRec Budgets |
+|---:|---:|---:|
+| 42 | 23.77 ms | 27.65 ms |
+| 101 | 21.40 ms | 25.80 ms |
+| 202 | 21.69 ms | 25.04 ms |
+
+Interpretation:
+
+This is the first positive result for the original LM-facing JumpRec idea. Once
+SmolLM2 is made recurrent inside its own model path, JumpRec can recover nearly
+the full teacher accuracy while using roughly half the recurrent core-layer
+compute on this 6/3 textual pointer task.
+
+The caveat is important: current timing evaluates all JumpRec budgets in
+parallel, which is slower wall-clock than the full recurrent teacher. The
+compute-savings result only becomes an inference-speed result with serial
+early-exit routing: try the cheap jump, verify, and run only the necessary tail
+or full fallback. That is the next engineering target.
