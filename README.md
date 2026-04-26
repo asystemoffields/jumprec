@@ -66,19 +66,26 @@ The first max-hop repair was positive on seeds 42 and 101 but failed on seed
 matched or beat the full teacher while using about 4.4 of 18 recurrent core
 layers at threshold 0.90, with about a 1.9x batch-1 speedup.
 
-The better hard-case recipe appears to be stratified hard-hop replay. On the
-previously weak seed 202, sampling hops with weights `0.10,0.20,0.35,0.35` and
-loss weights `1.0,1.2,2.0,2.0` raised full-loop accuracy from 76.9% to 99.5%
-under uniform hop eval. JumpRec on that repaired checkpoint reached 99.64% at
-threshold 0.95 while using 3.42 of 18 recurrent core layers, slightly beating
-the 99.53% loaded teacher and the 97.56% direct control. The same run was
-faster than the full teacher across the batch-size timing sweep, including
-2.17x at batch size 1 and 1.28x at batch size 64 for threshold 0.95.
+The better hard-case recipe is stratified hard-hop replay, but it is not yet a
+complete teacher solution. On the previously weak seed 202, sampling hops with
+weights `0.10,0.20,0.35,0.35` and loss weights `1.0,1.2,2.0,2.0` raised
+full-loop accuracy from 76.9% to 99.5%. Seed 101 also becomes very strong at
+99.7%. Seed 42 improves overall versus max-hop-only, but shifts the remaining
+weakness onto hop 4: 86.1% hop-4 accuracy.
 
-That stratified 8/4 result is the strongest hard-case shape so far, but it is
-still a single seed. The next credibility step is seed-confirming the
-stratified teacher recipe on seeds 42 and 101, then running JumpRec on those
-checkpoints if the teachers are strong.
+On the two strong stratified teachers, seeds 101 and 202, JumpRec confirms the
+hard-case shape. At threshold 0.95, the no-agreement router averages 99.59%
+accuracy while using 2.91 of 18 recurrent core layers, saving 83.83% counted
+core compute. The same serial router is faster than the full teacher in the
+current timing sweep, averaging about 2.29x speedup at batch size 1 and 1.39x
+at batch size 64 across those two seeds. Agreement routing recovers teacher
+parity at about 99.77% mean accuracy, but costs more wall-clock.
+
+That makes the hard-case result real but still gated by teacher quality. The
+next credibility step is a teacher-quality gate: track uniform validation by
+hop during teacher training, save the best worst-hop checkpoint, and test a
+short late uniform or max-hop polish so seed 42 can be repaired without harming
+seeds 101/202.
 
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
@@ -159,16 +166,18 @@ modal run run_recurrent_smol.py --mode core3_8n4h_strathop_jumprec
 
 1. Make the mixed/core3 small-batch result the current local-inference
    headline, while keeping the synthetic-task caveat explicit.
-2. Seed-confirm stratified hard-hop replay on seeds 42 and 101, then run
-   stratified JumpRec on those checkpoints if the teachers are strong.
-3. Compare stratified-vs-max-hop across matched seeds, including direct
-   control, router accuracy, counted layers, and timing.
-4. Begin staging paper-style result tables around three tiers: toy pointer
-   proof, mixed SmolLM2 seed-confirmed local latency, and stratified 8/4
+2. Add a teacher-quality gate for hard cases: validate uniformly by hop during
+   training, save the best worst-hop checkpoint, and report the gate result.
+3. Test a blended teacher schedule for 8/4, likely stratified training followed
+   by a short uniform or max-hop polish, then rerun seed 42.
+4. Run JumpRec only on teacher-gated checkpoints; avoid spending GPU on weak
+   teachers unless the purpose is explicitly diagnostic.
+5. Begin staging paper-style result tables around three tiers: toy pointer
+   proof, mixed SmolLM2 seed-confirmed local latency, and stratified/gated 8/4
    hard-case robustness.
-5. Keep scale portability in the design loop: favor block-level mechanisms that
+6. Keep scale portability in the design loop: favor block-level mechanisms that
    can survive 2B, 9B, and larger serving economics.
-6. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
+7. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
    control in every table.
-7. Seed-confirm any router or hard-case training improvement before making
+8. Seed-confirm any router or hard-case training improvement before making
    broader architecture claims.

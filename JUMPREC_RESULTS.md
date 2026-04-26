@@ -1708,3 +1708,92 @@ Next:
 4. Start preparing the paper-style table around three tiers: toy pointer
    proof, mixed SmolLM2 seed-confirmed local latency, and stratified 8/4
    hard-case robustness.
+
+## 2026-04-26 - stratified hard-case seed follow-up
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_teacher --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_jumprec --seed 101
+```
+
+The stratified teacher recipe is better than the max-hop-only recipe on seeds
+101 and 202, but not a complete stability solution. Seed 42 improved on hop 3
+but shifted weakness back onto hop 4.
+
+Teacher comparison:
+
+| Seed | Recipe | Full Teacher | Hop 1 | Hop 2 | Hop 3 | Hop 4 | Direct Control |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 42 | max-hop | 94.87% | 99.89% | 95.02% | 88.68% | 95.74% | 77.28% |
+| 42 | stratified | 96.32% | 100.00% | 100.00% | 99.03% | 86.10% | 94.34% |
+| 101 | max-hop | 96.14% | 99.80% | 98.08% | 93.30% | 93.25% | 61.80% |
+| 101 | stratified | 99.74% | 100.00% | 99.86% | 100.00% | 99.16% | 96.16% |
+| 202 | max-hop | 76.87% | 99.17% | 73.08% | 50.41% | 86.37% | 58.85% |
+| 202 | stratified | 99.51% | 100.00% | 99.83% | 99.94% | 98.27% | 91.62% |
+
+Interpretation of the teacher runs:
+
+Stratified hard replay fixed the seed-202 collapse and made seed 101 excellent,
+but seed 42 shows a new failure mode. The recipe no longer starves hop 3, but
+it can under-serve the max-hop edge on some seeds. This means the teacher story
+is improved but not solved. The next teacher hygiene step should checkpoint by
+uniform validation, especially worst-hop accuracy, rather than only saving the
+final training step. A short late-stage uniform or max-hop polish may also be
+needed.
+
+Because seed 101 was a clean strong stratified teacher, we ran JumpRec on it.
+Seed 42 was not run through JumpRec in this round because its teacher is not a
+clean hard-hop target.
+
+Strong-stratified JumpRec summary:
+
+| Seed | Loaded Teacher | Same-Run Direct | Router 0.90 Acc | Router 0.90 Core | Router 0.90 Savings | Router 0.95 Acc | Router 0.95 Core | Router 0.95 Savings |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 101 | 99.79% | 90.32% | 99.43% | 2.36 / 18 | 86.90% | 99.54% | 2.40 / 18 | 86.69% |
+| 202 | 99.53% | 97.56% | 99.45% | 3.33 / 18 | 81.49% | 99.64% | 3.42 / 18 | 80.98% |
+| Mean | 99.66% | 93.44% | 99.44% | 2.84 / 18 | 84.20% | 99.59% | 2.91 / 18 | 83.83% |
+
+Agreement-filtered router:
+
+| Seed | Agreement 0.80 Acc | Avg Core Layers | Savings |
+|---:|---:|---:|---:|
+| 101 | 99.76% | 2.36 / 18 | 86.87% |
+| 202 | 99.79% | 3.33 / 18 | 81.49% |
+| Mean | 99.77% | 2.85 / 18 | 84.18% |
+
+Seed-101 no-agreement timing at threshold 0.90:
+
+| Batch Size | Full Teacher | Router 0.90 | Speedup |
+|---:|---:|---:|---:|
+| 1 | 19.59 ms | 7.75 ms | 2.53x |
+| 2 | 20.35 ms | 10.22 ms | 1.99x |
+| 4 | 20.72 ms | 11.05 ms | 1.87x |
+| 8 | 20.56 ms | 11.94 ms | 1.72x |
+| 16 | 21.32 ms | 14.00 ms | 1.52x |
+| 32 | 22.03 ms | 16.79 ms | 1.31x |
+| 64 | 33.51 ms | 21.11 ms | 1.59x |
+
+For the two strong stratified JumpRec seeds, threshold 0.95 averages 99.59%
+accuracy while using 2.91 of 18 counted recurrent core layers. Batch-1 speedup
+is about 2.29x on average, and batch-64 speedup is about 1.39x, both versus the
+full recurrent teacher in the current serial no-agreement implementation.
+
+Interpretation:
+
+On strong stratified teachers, JumpRec has now confirmed the desirable hard-case
+shape twice: recurrent depth matters, direct control is much weaker on hard
+hops, and the router retains high accuracy while skipping most recurrent core
+layers. This is stronger than the max-hop result because the stratified seed
+101 and seed 202 teachers both exceed 99.5% full-loop accuracy, and the serial
+router is faster across the measured batch-size sweep.
+
+The uncomfortable but useful caveat is seed 42. Stratified replay is not a
+universal teacher recipe; it changes which hop can fail. The next research step
+should not be more blind JumpRec runs. It should be a teacher-quality gate:
+track uniform validation by hop during teacher training, save the best
+worst-hop checkpoint, and test a blended schedule such as stratified training
+followed by a short uniform or max-hop polish. Once seed 42 can be repaired
+without harming seeds 101/202, rerun JumpRec on the gated checkpoints.
