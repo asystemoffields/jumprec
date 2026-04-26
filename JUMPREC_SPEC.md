@@ -89,3 +89,23 @@ is:
 
 The important ablation is compute-quality frontier against full looping,
 early-exit looping, and jump-without-verifier.
+
+## Scaling constraint
+
+The architecture should not depend on accidents of the 135M prototype. The
+portable contract is:
+
+1. A contiguous recurrent core can be looped or skipped.
+2. A jump path proposes a later recurrent state.
+3. A verifier estimates whether that proposed state is good enough.
+4. A fallback path spends true recurrence only when needed.
+
+At 135M, serial routing is acceptable for discovery. At 2B to 9B, routing
+overhead and checkpoint reuse become part of the architecture, not just the
+runner. At very large dense or MoE scale, the jump/router must be block-level,
+fused, sparse, or otherwise communication-aware enough that it avoids expensive
+model work instead of adding control-flow overhead around it.
+
+This means every positive result needs two readings: quality improvement on
+hard examples, and an execution story that could plausibly survive larger model
+economics.

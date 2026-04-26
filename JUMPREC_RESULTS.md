@@ -1306,3 +1306,39 @@ regime is exactly where a single-user local assistant, agent, or interactive
 tool would usually live. But it also means we should not claim a generic
 production-serving throughput improvement without a fused/static routing
 implementation.
+
+## 2026-04-26 - checkpoint reuse verification
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep_reuse --seed 42
+```
+
+The first Windows launcher attempt failed before the Modal job due to redirected
+console encoding of a checkmark character. Rerunning with UTF-8 console settings
+worked.
+
+The reuse mode loaded `/results/checkpoints/mixed_core3_router_seed42.pt`,
+skipped teacher training, loaded JumpRec, and reran eval/timing. This confirms
+that future threshold or timing-only probes can avoid the full teacher and
+JumpRec training cost.
+
+Representative seed-42 reuse numbers:
+
+| Metric | Value |
+|---|---:|
+| Full recurrent teacher | 98.61% |
+| Router 0.90 no-agreement | 99.17% |
+| Router 0.90 avg core layers | 2.10 / 15 |
+| Router 0.90 core savings | 85.99% |
+| Batch-1 full timing | 21.54 ms |
+| Batch-1 router 0.90 timing | 8.49 ms |
+| Batch-1 speedup | 2.54x |
+| Batch-64 full timing | 28.25 ms |
+| Batch-64 router 0.90 timing | 26.52 ms |
+| Batch-64 speedup | 1.07x |
+
+These numbers should not replace the seed-mean table above because this was a
+reuse validation run, not a new seed-confirmation sweep. The important result is
+workflow: checkpoint reuse now works on Modal.

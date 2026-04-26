@@ -80,6 +80,9 @@ class Config:
     use_reinject: bool = True
     mixed_tasks: bool = False
     curriculum_hops: bool = False
+    hard_hop_fraction: float = 0.0
+    hard_hop_loss_weight: float = 1.0
+    final_loop_loss_weight: float = 2.0
     jump_steps: int = 0
     max_correct: int = 3
     jump_layers: int = 1
@@ -99,7 +102,7 @@ class Config:
 
 def config_for_mode(mode: str) -> Config:
     cfg = Config(mode=mode)
-    if mode in ("dry", "dry_sweep", "dry_sweep_reuse"):
+    if mode in ("dry", "dry_sweep", "dry_sweep_reuse", "dry_hardhop"):
         cfg.use_fake_model = True
         cfg.d_model = 64
         cfg.n_heads = 4
@@ -121,7 +124,15 @@ def config_for_mode(mode: str) -> Config:
         cfg.jump_layers = 1
         cfg.direct_steps = 4
         cfg.direct_layers = 2
-        if mode == "dry_sweep":
+        if mode == "dry_hardhop":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 4.0
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_sweep":
             cfg.timing_batch_sizes = "1,2,4"
             cfg.save_checkpoints = True
             cfg.checkpoint_tag = "dry_router_seed{seed}"
@@ -310,6 +321,48 @@ def config_for_mode(mode: str) -> Config:
         cfg.direct_layers = 3
         cfg.eval_batches = 64
         cfg.log_every = 500
+    elif mode == "core3_8n4h_hardhop_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 6500
+        cfg.recurrent_steps = 10000
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 4500
+        cfg.direct_layers = 3
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_hardhop_seed{seed}"
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_hardhop_jumprec":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 4500
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_hardhop_seed{seed}"
+        cfg.timing_batches = 64
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.eval_batches = 96
+        cfg.log_every = 500
     elif mode == "retrofit_8n4h_unfreeze":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -392,7 +445,11 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     letters = [chr(ord("A") + i) for i in range(cfg.n_nodes)]
     task_names = ["forward", "inverse", "alternate", "square"] if cfg.mixed_tasks else ["forward"]
 
-    def make_examples(batch_size: int, active_max_hops: int | None = None):
+    def make_examples(
+        batch_size: int,
+        active_max_hops: int | None = None,
+        hard_hop_sampling: bool = True,
+    ):
         texts = []
         targets_l = []
         step_targets_l = []
@@ -406,7 +463,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             for i, j in enumerate(perm):
                 inv[j] = i
             start = random.randrange(cfg.n_nodes)
-            hops = random.randint(1, max_hops)
+            if hard_hop_sampling and cfg.hard_hop_fraction > 0.0 and random.random() < cfg.hard_hop_fraction:
+                hops = max_hops
+            else:
+                hops = random.randint(1, max_hops)
             task_id = random.randrange(len(task_names))
             cur = start
             step_targets = []
@@ -641,13 +701,42 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             lengths = batch["attention_mask"].sum(dim=1) - 1
             return batch["input_ids"], batch["attention_mask"].bool(), lengths
 
-    def batch_encoded(batch_size: int, active_max_hops: int | None = None):
-        texts, target, step_targets, hops, task_ids = make_examples(batch_size, active_max_hops)
+    def batch_encoded(
+        batch_size: int,
+        active_max_hops: int | None = None,
+        hard_hop_sampling: bool = True,
+    ):
+        texts, target, step_targets, hops, task_ids = make_examples(
+            batch_size,
+            active_max_hops,
+            hard_hop_sampling,
+        )
         input_ids, attention_mask, lengths = encode_texts(texts)
         return input_ids, attention_mask, lengths, target, step_targets, hops, task_ids
 
     def accuracy(logits, target) -> float:
         return (logits.argmax(dim=-1) == target).float().mean().item()
+
+    def example_weights(hops):
+        if cfg.hard_hop_loss_weight <= 1.0:
+            return torch.ones_like(hops, dtype=torch.float32)
+        hard = (hops == cfg.max_hops).float()
+        return 1.0 + (cfg.hard_hop_loss_weight - 1.0) * hard
+
+    def weighted_ce(logits, target, hops):
+        weights = example_weights(hops)
+        losses = F.cross_entropy(logits, target, reduction="none")
+        return (losses * weights).sum() / weights.sum().clamp_min(1e-6)
+
+    def weighted_kl(logits, soft_teacher, hops):
+        weights = example_weights(hops)
+        losses = F.kl_div(F.log_softmax(logits, dim=-1), soft_teacher, reduction="none").sum(dim=-1)
+        return (losses * weights).sum() / weights.sum().clamp_min(1e-6)
+
+    def weighted_bce_with_logits(logits, target, hops):
+        weights = example_weights(hops)
+        losses = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+        return (losses * weights).sum() / weights.sum().clamp_min(1e-6)
 
     model = RecurrentSmol().to(device)
     trainable = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
@@ -681,9 +770,9 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     else:
         for step in range(1, cfg.final_steps + 1):
             active_hops = active_hops_for_step(step, cfg.final_steps)
-            input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size, active_hops)
+            input_ids, attention_mask, lengths, target, _, hops, _ = batch_encoded(cfg.batch_size, active_hops)
             logits = model(input_ids, attention_mask, lengths, cfg.loop_steps)
-            loss = F.cross_entropy(logits, target)
+            loss = weighted_ce(logits, target, hops)
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_([p for _, p in trainable], 1.0)
@@ -700,12 +789,15 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
 
         for step in range(1, cfg.recurrent_steps + 1):
             active_hops = active_hops_for_step(step, cfg.recurrent_steps)
-            input_ids, attention_mask, lengths, target, step_targets, _, _ = batch_encoded(cfg.batch_size, active_hops)
+            input_ids, attention_mask, lengths, target, step_targets, hops, _ = batch_encoded(
+                cfg.batch_size,
+                active_hops,
+            )
             logits_by_loop = model.collect_logits(input_ids, attention_mask, lengths, cfg.loop_steps, include_zero=False)
             losses = []
             for i, logits_i in enumerate(logits_by_loop):
-                weight = 2.0 if i == cfg.loop_steps - 1 else 1.0
-                losses.append(weight * F.cross_entropy(logits_i, step_targets[:, i]))
+                weight = cfg.final_loop_loss_weight if i == cfg.loop_steps - 1 else 1.0
+                losses.append(weight * weighted_ce(logits_i, step_targets[:, i], hops))
             loss = torch.stack(losses).mean()
             opt.zero_grad()
             loss.backward()
@@ -739,7 +831,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             exit_metrics[f"early_{suffix}_core_savings_vs_full_pct"] = 0.0
         with torch.no_grad():
             for _ in range(cfg.eval_batches):
-                input_ids, attention_mask, lengths, target, step_targets, hops, task_ids = batch_encoded(cfg.batch_size)
+                input_ids, attention_mask, lengths, target, step_targets, hops, task_ids = batch_encoded(
+                    cfg.batch_size,
+                    hard_hop_sampling=False,
+                )
                 logits_by_loop = model.collect_logits(
                     input_ids, attention_mask, lengths, cfg.loop_steps, include_zero=True
                 )
@@ -987,7 +1082,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             t1 = time.time()
             jumprec.train()
             for step in range(1, cfg.jump_steps + 1):
-                input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
+                input_ids, attention_mask, lengths, target, _, hops, _ = batch_encoded(cfg.batch_size)
                 with torch.no_grad():
                     state0, layer_mask, position_ids, position_embeddings, teacher_states, teacher_logits = teacher_collect(
                         input_ids,
@@ -999,12 +1094,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 ce_losses, distill_losses, verifier_losses = [], [], []
                 for corrections in range(cfg.max_correct + 1):
                     final_logits = out["logits"][corrections]
-                    ce_losses.append(F.cross_entropy(final_logits, target))
-                    distill_losses.append(
-                        F.kl_div(F.log_softmax(final_logits, dim=-1), soft_teacher, reduction="batchmean")
-                    )
+                    ce_losses.append(weighted_ce(final_logits, target, hops))
+                    distill_losses.append(weighted_kl(final_logits, soft_teacher, hops))
                     good = (final_logits.detach().argmax(dim=-1) == target).float()
-                    verifier_losses.append(F.binary_cross_entropy_with_logits(out["verify"][corrections], good))
+                    verifier_losses.append(weighted_bce_with_logits(out["verify"][corrections], good, hops))
                 loss = (
                     torch.stack(ce_losses).mean()
                     + 0.2 * torch.stack(distill_losses).mean()
@@ -1043,7 +1136,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     metrics[f"{prefix}_avg_core_layers"] = 0.0
             with torch.no_grad():
                 for _ in range(cfg.eval_batches):
-                    input_ids, attention_mask, lengths, target, _, hops, task_ids = batch_encoded(cfg.batch_size)
+                    input_ids, attention_mask, lengths, target, _, hops, task_ids = batch_encoded(
+                        cfg.batch_size,
+                        hard_hop_sampling=False,
+                    )
                     state0, layer_mask, position_ids, position_embeddings, _, teacher_logits = teacher_collect(
                         input_ids,
                         attention_mask,
@@ -1190,7 +1286,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         t2 = time.time()
         direct.train()
         for step in range(1, cfg.direct_steps + 1):
-            input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
+            input_ids, attention_mask, lengths, target, _, hops, _ = batch_encoded(cfg.batch_size)
             with torch.no_grad():
                 state0, layer_mask, position_ids, position_embeddings, _, _ = teacher_collect(
                     input_ids,
@@ -1198,7 +1294,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     lengths,
                 )
             logits = direct.forward_encoded(state0.detach(), layer_mask, position_ids, position_embeddings, lengths)
-            loss = F.cross_entropy(logits, target)
+            loss = weighted_ce(logits, target, hops)
             opt_d.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(direct.parameters(), 1.0)
@@ -1217,7 +1313,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         direct_by_task = {name: [] for name in task_names}
         with torch.no_grad():
             for _ in range(cfg.eval_batches):
-                input_ids, attention_mask, lengths, target, _, hops, task_ids = batch_encoded(cfg.batch_size)
+                input_ids, attention_mask, lengths, target, _, hops, task_ids = batch_encoded(
+                    cfg.batch_size,
+                    hard_hop_sampling=False,
+                )
                 state0, layer_mask, position_ids, position_embeddings, _, _ = teacher_collect(
                     input_ids,
                     attention_mask,
@@ -1257,12 +1356,18 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             timing_bsz = timing_bsz or cfg.timing_batch_size or cfg.batch_size
             with torch.no_grad():
                 for _ in range(2):
-                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(timing_bsz)
+                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(
+                        timing_bsz,
+                        hard_hop_sampling=False,
+                    )
                     fn(input_ids, attention_mask, lengths)
                 sync()
                 start = time.perf_counter()
                 for _ in range(cfg.timing_batches):
-                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(timing_bsz)
+                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(
+                        timing_bsz,
+                        hard_hop_sampling=False,
+                    )
                     fn(input_ids, attention_mask, lengths)
                 sync()
                 return 1000.0 * (time.perf_counter() - start) / cfg.timing_batches
@@ -1478,6 +1583,7 @@ if __name__ == "__main__":
         default="dry",
         choices=[
             "dry",
+            "dry_hardhop",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -1500,6 +1606,8 @@ if __name__ == "__main__":
             "retrofit_8n4h_curriculum",
             "jumprec_8n4h_direct",
             "core3_8n4h_jumprec_direct",
+            "core3_8n4h_hardhop_teacher",
+            "core3_8n4h_hardhop_jumprec",
             "retrofit_8n4h_unfreeze",
             "retrofit_12n6h",
             "retrofit_unfreeze",
@@ -1511,7 +1619,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.local:
         raise SystemExit("Use `modal run run_recurrent_smol.py --mode retrofit_probe`, or add `--local`.")
-    if args.mode not in ("dry", "dry_sweep", "dry_sweep_reuse"):
+    if args.mode not in ("dry", "dry_hardhop", "dry_sweep", "dry_sweep_reuse"):
         raise SystemExit("Local CPU guard: only dry modes are allowed locally.")
     cfg = config_for_mode(args.mode)
     if args.seed is not None:

@@ -65,6 +65,28 @@ hard-case training recipe for 8/4 and beyond.
 
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
+## Scaling Constraint
+
+JumpRec should be designed as a model-size-independent interface, not as a
+135M-specific patch. The recurrent core, jump module, verifier, and fallback
+policy need to preserve the same conceptual contract from small models through
+larger local models.
+
+The execution strategy will probably differ by scale:
+
+- `135M`: serial subset routing is acceptable for fast iteration and exposes
+  the basic latency/quality trade-off.
+- `2B` to `9B`: routing overhead must be low, checkpoint reuse must be standard,
+  and the jump path should avoid launching many tiny dynamic batches.
+- very large dense or MoE models: the router must skip expensive block/experts
+  cleanly, avoid extra cross-device communication, and preferably be fused,
+  static, or block-level enough that saved recurrence is larger than routing
+  overhead.
+
+This makes hard-case robustness and hardware-aware routing both first-class
+requirements. A result that only works because the toy runner overhead is small
+does not count as the end goal.
+
 The first pretrained-LM crash tests were negative: frozen SmolLM2 final states,
 input adapters, curriculum warmup, and a latent workspace sidecar did not
 produce a competent looped teacher. The successful path was a true
@@ -93,6 +115,7 @@ full-loop recurrent model is strong.
 ```bash
 python run_jumprec_v0.py --local --mode dry
 python run_jumprec_v0.py --local --mode dry_mixed
+python run_recurrent_smol.py --local --mode dry_hardhop
 python run_recurrent_smol.py --local --mode dry_sweep
 python run_recurrent_smol.py --local --mode dry_sweep_reuse
 ```
@@ -108,6 +131,8 @@ modal run run_recurrent_smol.py --mode direct_probe
 modal run run_recurrent_smol.py --mode mixed_probe
 modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep
 modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep_reuse
+modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_teacher
+modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_jumprec
 ```
 
 ## Current Next Steps
@@ -118,7 +143,9 @@ modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep_reuse
    probes can be rerun without retraining.
 3. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
    better balanced curriculum; core depth alone did not solve 4-hop cases.
-4. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
+4. Keep scale portability in the design loop: favor block-level mechanisms that
+   can survive 2B, 9B, and larger serving economics.
+5. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
    control in every table.
-5. Seed-confirm any router or hard-case training improvement before making
+6. Seed-confirm any router or hard-case training improvement before making
    broader architecture claims.
