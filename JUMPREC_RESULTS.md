@@ -1342,3 +1342,126 @@ Representative seed-42 reuse numbers:
 These numbers should not replace the seed-mean table above because this was a
 reuse validation run, not a new seed-confirmation sweep. The important result is
 workflow: checkpoint reuse now works on Modal.
+
+## 2026-04-26 - 8-node / 4-hop hard-hop teacher repair
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_teacher --seed 42
+```
+
+This run tests whether the prior 8/4 weakness was a fundamental recurrent-LM
+failure or a training recipe failure. Changes from the earlier
+`core3_8n4h_jumprec_direct` setup:
+
+- 70% of training examples use the current maximum hop count.
+- max-hop examples receive 2.5x loss weight.
+- the final recurrent loop receives 4x loop-loss weight instead of 2x.
+- teacher checkpoints are saved for a separate JumpRec run.
+- evaluation remains uniform over hops, so the training bias does not inflate
+  the reported per-hop table.
+
+Seed-42 teacher result:
+
+| Model | Accuracy | Hop 1 | Hop 2 | Hop 3 | Hop 4 |
+|---|---:|---:|---:|---:|---:|
+| Prior core3 8/4 full teacher | 84.42% | 99.93% | 100.00% | 89.17% | 48.35% |
+| Hard-hop core3 full teacher | 94.87% | 99.89% | 95.02% | 88.68% | 95.74% |
+| Hard-hop 3-layer direct control | 77.28% | 98.72% | 76.33% | 55.03% | 78.00% |
+
+Loop-depth profile:
+
+| Loops | Final-target Accuracy |
+|---:|---:|
+| 0 | 15.48% |
+| 1 | 39.14% |
+| 2 | 58.58% |
+| 3 | 75.55% |
+| 4 | 95.62% |
+| 5 | 95.35% |
+| 6 | 94.87% |
+
+Interpretation:
+
+This is the first clean evidence that the 8/4 teacher weakness was not an
+architectural ceiling. The old full teacher failed mainly on hop-4 examples;
+the hard-hop teacher reaches 95.74% on hop 4 under uniform eval. The remaining
+weakness moved to hop 3, at 88.68%, which suggests the biased training recipe
+may slightly over-specialize to the maximum-depth case.
+
+The direct control result is important: it reaches only 77.28%, with hop 3 at
+55.03%. So the full recurrent teacher is not merely learning a shallow shortcut.
+This justifies the next run:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_jumprec --seed 42
+```
+
+That run loads the saved teacher checkpoint and asks whether JumpRec can retain
+the hard-hop teacher's improvement while spending fewer recurrent core layers.
+
+## 2026-04-26 - JumpRec on repaired 8/4 teacher
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_jumprec --seed 42
+```
+
+This run loaded `/results/checkpoints/core3_8n4h_hardhop_seed42.pt`, skipped
+teacher training, trained JumpRec, and ran a batch-size timing sweep. The loaded
+teacher eval was 94.71%, close to the 94.87% teacher-only run above.
+
+JumpRec quality/compute trade-off:
+
+| Path | Accuracy | Avg Core Layers | Savings |
+|---|---:|---:|---:|
+| Full recurrent teacher | 94.71% | 18.00 / 18 | 0.00% |
+| Jump budget 0 | 46.78% | jump only | n/a |
+| Jump budget 1 | 86.36% | jump + 1 tail | n/a |
+| Jump budget 2 | 94.51% | jump + 2 tails | n/a |
+| Jump budget 3 | 95.80% | jump + 3 tails | n/a |
+| No-agree router 0.80 | 93.77% | 4.22 / 18 | 76.57% |
+| No-agree router 0.90 | 94.73% | 4.70 / 18 | 73.91% |
+| No-agree router 0.95 | 95.23% | 5.14 / 18 | 71.44% |
+| Agreement router 0.80 | 96.09% | 4.72 / 18 | 73.78% |
+
+No-agreement threshold 0.90 essentially matches the loaded full teacher while
+using 26.09% of the counted recurrent core layers. Threshold 0.95 slightly
+beats the teacher while still saving 71.44% counted core compute. Agreement at
+0.80 is the most accurate path, but its extra pass is slower.
+
+Hop breakdown for strict/no-agreement threshold 0.80:
+
+| Hop | Accuracy |
+|---:|---:|
+| 1 | 98.90% |
+| 2 | 94.84% |
+| 3 | 88.45% |
+| 4 | 93.22% |
+
+Batch-size timing for no-agreement threshold 0.90:
+
+| Batch Size | Full Teacher | Router 0.90 | Speedup |
+|---:|---:|---:|---:|
+| 1 | 19.64 ms | 10.32 ms | 1.90x |
+| 2 | 20.47 ms | 15.10 ms | 1.36x |
+| 4 | 20.83 ms | 20.23 ms | 1.03x |
+| 8 | 20.97 ms | 23.91 ms | 0.88x |
+| 16 | 22.15 ms | 30.01 ms | 0.74x |
+| 32 | 22.75 ms | 34.59 ms | 0.66x |
+| 64 | 34.33 ms | 39.12 ms | 0.88x |
+
+Interpretation:
+
+This is the strongest "hard problem" result so far. The repaired teacher turns
+8/4 from a weak-teacher case into a competent recurrent-depth case, and JumpRec
+then recovers the teacher's accuracy with about 74% counted core-layer savings.
+Unlike the easier mixed/core3 benchmark, the useful wall-clock regime is
+narrower: batch size 1 is clearly faster, batch size 2 is faster, batch size 4
+is roughly break-even, and larger batches lose with the current serial router.
+
+The main caveat is seeds. This is one seed. It is strong enough to justify
+seed-confirming the hard-hop teacher plus JumpRec path, but not yet enough for a
+paper-level claim.

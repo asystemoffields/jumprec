@@ -63,6 +63,13 @@ recover a weak full-loop teacher. The next credible result needs either a
 better strict router that does not need an extra agreement pass, or a stronger
 hard-case training recipe for 8/4 and beyond.
 
+The first hard-case repair is positive on seed 42. A hard-hop 8-node / 4-hop
+teacher with 3 recurrent core layers reaches about 94.9% full-loop accuracy
+under uniform hop eval, with hop-4 around 95%. JumpRec on that repaired teacher
+matches or slightly beats the teacher at roughly 4.7-5.1 of 18 recurrent core
+layers, saving about 71-74% counted core compute. Batch-1 timing remains faster,
+but the crossover comes earlier than on the easier mixed task.
+
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
 ## Scaling Constraint
@@ -139,10 +146,10 @@ modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_jumprec
 
 1. Make the mixed/core3 small-batch result the current local-inference
    headline, while keeping the synthetic-task caveat explicit.
-2. Verify Modal checkpoint reuse on at least one seed so timing or calibration
-   probes can be rerun without retraining.
-3. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
-   better balanced curriculum; core depth alone did not solve 4-hop cases.
+2. Seed-confirm the hard-hop 8/4 teacher and JumpRec result before treating it
+   as a robust hard-problem result.
+3. Use the 8/4 result to tune a less biased hard-case curriculum, since hop-3
+   remains softer than hop-4 after max-hop replay.
 4. Keep scale portability in the design loop: favor block-level mechanisms that
    can survive 2B, 9B, and larger serving economics.
 5. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
