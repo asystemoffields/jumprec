@@ -76,6 +76,10 @@ class Config:
     save_checkpoints: bool = False
     load_checkpoints: bool = False
     checkpoint_tag: str = ""
+    teacher_val_every: int = 0
+    teacher_val_batches: int = 0
+    teacher_gate_min_full: float = 0.0
+    teacher_gate_min_worst_hop: float = 0.0
     reinject_init: float = 0.20
     use_reinject: bool = True
     mixed_tasks: bool = False
@@ -104,7 +108,7 @@ class Config:
 
 def config_for_mode(mode: str) -> Config:
     cfg = Config(mode=mode)
-    if mode in ("dry", "dry_sweep", "dry_sweep_reuse", "dry_hardhop", "dry_strathop"):
+    if mode in ("dry", "dry_sweep", "dry_sweep_reuse", "dry_hardhop", "dry_strathop", "dry_strathop_gate"):
         cfg.use_fake_model = True
         cfg.d_model = 64
         cfg.n_heads = 4
@@ -141,6 +145,20 @@ def config_for_mode(mode: str) -> Config:
             cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
             cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
             cfg.final_loop_loss_weight = 4.0
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop_gate":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+            cfg.final_loop_loss_weight = 4.0
+            cfg.teacher_val_every = 2
+            cfg.teacher_val_batches = 1
+            cfg.teacher_gate_min_full = 0.5
+            cfg.teacher_gate_min_worst_hop = 0.25
+            cfg.save_checkpoints = True
+            cfg.checkpoint_tag = "dry_strathop_gate_seed{seed}"
             cfg.timing_batch_sizes = "1,2"
         elif mode == "dry_sweep":
             cfg.timing_batch_sizes = "1,2,4"
@@ -392,6 +410,29 @@ def config_for_mode(mode: str) -> Config:
         cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
         cfg.eval_batches = 96
         cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_gate_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 6500
+        cfg.recurrent_steps = 10000
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 4500
+        cfg.direct_layers = 3
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_gate_seed{seed}"
+        cfg.teacher_val_every = 500
+        cfg.teacher_val_batches = 16
+        cfg.teacher_gate_min_full = 0.995
+        cfg.teacher_gate_min_worst_hop = 0.98
+        cfg.eval_batches = 96
+        cfg.log_every = 500
     elif mode == "core3_8n4h_strathop_jumprec":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -411,6 +452,29 @@ def config_for_mode(mode: str) -> Config:
         cfg.load_checkpoints = True
         cfg.save_checkpoints = True
         cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
+        cfg.timing_batches = 64
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_gate_jumprec":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 4500
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_gate_seed{seed}"
         cfg.timing_batches = 64
         cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
         cfg.eval_batches = 96
@@ -481,7 +545,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     checkpoint_root = "/results/checkpoints" if os.path.isdir("/results") else "checkpoints"
     checkpoint_path = os.path.join(checkpoint_root, f"{checkpoint_tag}.pt")
 
-    def save_checkpoint(model_obj, jumprec_obj=None):
+    def save_checkpoint(model_obj, jumprec_obj=None, extra=None):
         if not cfg.save_checkpoints:
             return
         os.makedirs(checkpoint_root, exist_ok=True)
@@ -491,6 +555,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             "model_state": model_obj.state_dict(),
             "jumprec_state": jumprec_obj.state_dict() if jumprec_obj is not None else None,
         }
+        if extra is not None:
+            payload["extra"] = extra
         torch.save(payload, checkpoint_path)
         print(f"[checkpoint] saved {checkpoint_path}", flush=True)
 
@@ -794,6 +860,48 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     def accuracy(logits, target) -> float:
         return (logits.argmax(dim=-1) == target).float().mean().item()
 
+    def eval_teacher_quality(num_batches: int) -> Dict[str, object]:
+        if num_batches <= 0:
+            raise ValueError("teacher_val_batches must be positive when teacher validation is enabled")
+        was_training = model.training
+        model.eval()
+        py_random_state = random.getstate()
+        total_correct = 0.0
+        total_count = 0
+        hop_correct = {hop: 0.0 for hop in range(1, cfg.max_hops + 1)}
+        hop_count = {hop: 0 for hop in range(1, cfg.max_hops + 1)}
+        try:
+            with torch.no_grad():
+                for _ in range(num_batches):
+                    input_ids, attention_mask, lengths, target, _, hops, _ = batch_encoded(
+                        cfg.batch_size,
+                        hard_hop_sampling=False,
+                    )
+                    logits = model(input_ids, attention_mask, lengths, cfg.loop_steps)
+                    correct = logits.argmax(dim=-1) == target
+                    total_correct += correct.float().sum().item()
+                    total_count += int(target.numel())
+                    for hop in range(1, cfg.max_hops + 1):
+                        mask = hops == hop
+                        if mask.any():
+                            hop_correct[hop] += correct[mask].float().sum().item()
+                            hop_count[hop] += int(mask.sum().item())
+        finally:
+            random.setstate(py_random_state)
+        if was_training:
+            model.train()
+        by_hop = {
+            str(hop): (hop_correct[hop] / hop_count[hop] if hop_count[hop] else None)
+            for hop in range(1, cfg.max_hops + 1)
+        }
+        observed_hops = [value for value in by_hop.values() if value is not None]
+        return {
+            "full_acc": total_correct / max(1, total_count),
+            "by_hop": by_hop,
+            "worst_hop_acc": min(observed_hops) if observed_hops else None,
+            "batches": num_batches,
+        }
+
     def example_weights(hops):
         if hop_loss_weights:
             weight_table = torch.tensor(
@@ -847,6 +955,57 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         phase = max(1, total_steps // cfg.max_hops)
         return min(cfg.max_hops, 1 + (step - 1) // phase)
 
+    best_teacher_state = None
+    best_teacher_summary = None
+    best_teacher_score = -1.0
+    best_teacher_full = -1.0
+
+    def maybe_validate_teacher(step: int):
+        nonlocal best_teacher_state, best_teacher_summary, best_teacher_score, best_teacher_full
+        if cfg.teacher_val_every <= 0:
+            return
+        if step % cfg.teacher_val_every != 0 and step != cfg.recurrent_steps:
+            return
+        val_batches = cfg.teacher_val_batches or max(1, min(cfg.eval_batches, 16))
+        summary = eval_teacher_quality(val_batches)
+        worst = float(summary["worst_hop_acc"] or 0.0)
+        full = float(summary["full_acc"])
+        passed = (
+            full >= cfg.teacher_gate_min_full
+            and worst >= cfg.teacher_gate_min_worst_hop
+        )
+        print(
+            "[teacher val] "
+            f"step {step:5d}/{cfg.recurrent_steps} "
+            f"full {full*100:.2f}% worst_hop {worst*100:.2f}% "
+            f"passed {passed} by_hop {json.dumps(summary['by_hop'])}",
+            flush=True,
+        )
+        if worst > best_teacher_score or (math.isclose(worst, best_teacher_score) and full > best_teacher_full):
+            best_teacher_score = worst
+            best_teacher_full = full
+            best_teacher_summary = {
+                "step": step,
+                "passed": passed,
+                **summary,
+            }
+            best_teacher_state = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
+            save_checkpoint(
+                model,
+                extra={
+                    "teacher_val_best": best_teacher_summary,
+                    "teacher_val_restored": False,
+                },
+            )
+            print(
+                "[teacher val] "
+                f"new best step {step} full {full*100:.2f}% worst_hop {worst*100:.2f}%",
+                flush=True,
+            )
+
     t0 = time.time()
     model.train()
     if cfg.load_checkpoints:
@@ -898,7 +1057,25 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     f"elapsed {time.time()-t0:.1f}s",
                     flush=True,
                 )
-        save_checkpoint(model)
+            maybe_validate_teacher(step)
+        if best_teacher_state is not None:
+            model.load_state_dict(best_teacher_state)
+            print(
+                "[teacher val] "
+                f"restored best step {best_teacher_summary['step']} "
+                f"full {best_teacher_summary['full_acc']*100:.2f}% "
+                f"worst_hop {best_teacher_summary['worst_hop_acc']*100:.2f}%",
+                flush=True,
+            )
+            save_checkpoint(
+                model,
+                extra={
+                    "teacher_val_best": best_teacher_summary,
+                    "teacher_val_restored": True,
+                },
+            )
+        else:
+            save_checkpoint(model)
 
     def eval_model():
         model.eval()
@@ -990,6 +1167,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         return out
 
     eval_summary = eval_model()
+    if best_teacher_summary is not None:
+        eval_summary["teacher_val_best"] = best_teacher_summary
     print(f"[eval] {json.dumps(eval_summary, indent=2)}")
 
     def teacher_collect(input_ids, attention_mask, lengths):
@@ -1669,6 +1848,7 @@ if __name__ == "__main__":
             "dry",
             "dry_hardhop",
             "dry_strathop",
+            "dry_strathop_gate",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -1694,7 +1874,9 @@ if __name__ == "__main__":
             "core3_8n4h_hardhop_teacher",
             "core3_8n4h_hardhop_jumprec",
             "core3_8n4h_strathop_teacher",
+            "core3_8n4h_strathop_gate_teacher",
             "core3_8n4h_strathop_jumprec",
+            "core3_8n4h_strathop_gate_jumprec",
             "retrofit_8n4h_unfreeze",
             "retrofit_12n6h",
             "retrofit_unfreeze",
@@ -1706,7 +1888,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.local:
         raise SystemExit("Use `modal run run_recurrent_smol.py --mode retrofit_probe`, or add `--local`.")
-    if args.mode not in ("dry", "dry_hardhop", "dry_strathop", "dry_sweep", "dry_sweep_reuse"):
+    if args.mode not in ("dry", "dry_hardhop", "dry_strathop", "dry_strathop_gate", "dry_sweep", "dry_sweep_reuse"):
         raise SystemExit("Local CPU guard: only dry modes are allowed locally.")
     cfg = config_for_mode(args.mode)
     if args.seed is not None:

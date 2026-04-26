@@ -141,6 +141,7 @@ python run_jumprec_v0.py --local --mode dry
 python run_jumprec_v0.py --local --mode dry_mixed
 python run_recurrent_smol.py --local --mode dry_hardhop
 python run_recurrent_smol.py --local --mode dry_strathop
+python run_recurrent_smol.py --local --mode dry_strathop_gate
 python run_recurrent_smol.py --local --mode dry_sweep
 python run_recurrent_smol.py --local --mode dry_sweep_reuse
 ```
@@ -159,7 +160,9 @@ modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep_reuse
 modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_teacher
 modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_jumprec
 modal run run_recurrent_smol.py --mode core3_8n4h_strathop_teacher
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_gate_teacher
 modal run run_recurrent_smol.py --mode core3_8n4h_strathop_jumprec
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_gate_jumprec
 ```
 
 ## Current Next Steps
