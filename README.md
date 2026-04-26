@@ -48,6 +48,9 @@ while using 2.40 of 15 recurrent core layers, and runs in 8.81 ms versus 18.81
 ms for the full recurrent teacher. That is a 2.13x batch-1 speedup while also
 beating the full teacher and prior direct-control accuracies.
 
+The runner now supports checkpoint save/load and batch-size timing sweeps, so
+future timing and threshold probes do not need to retrain from scratch.
+
 The main remaining caution is robustness. The 8-node / 4-hop setting is still
 limited by teacher quality and max-depth failures; JumpRec cannot reliably
 recover a weak full-loop teacher. The next credible result needs either a
@@ -75,6 +78,8 @@ full-loop recurrent model is strong.
 - `run_recurrent_smol.py`: recurrent-depth SmolLM2 retrofit and JumpRec runner.
 - `JUMPREC_SPEC.md`: architecture sketch and experimental framing.
 - `JUMPREC_RESULTS.md`: run history, tables, and interpretation.
+- `experiments/`: launch helpers and experiment orchestration notes.
+- `jumprec/`: staging area for the future general-use package.
 - `requirements.txt`: Python package dependencies.
 
 ## Quick Sanity Test
@@ -82,6 +87,8 @@ full-loop recurrent model is strong.
 ```bash
 python run_jumprec_v0.py --local --mode dry
 python run_jumprec_v0.py --local --mode dry_mixed
+python run_recurrent_smol.py --local --mode dry_sweep
+python run_recurrent_smol.py --local --mode dry_sweep_reuse
 ```
 
 The script guards against accidental heavy local runs. Use Modal for real tests:
@@ -93,6 +100,8 @@ modal run run_recurrent_smol.py --mode retrofit_probe
 modal run run_recurrent_smol.py --mode jumprec_probe
 modal run run_recurrent_smol.py --mode direct_probe
 modal run run_recurrent_smol.py --mode mixed_probe
+modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep
+modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep_reuse
 ```
 
 ## Current Next Steps

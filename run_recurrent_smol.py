@@ -19,6 +19,7 @@ import argparse
 import copy
 import json
 import math
+import os
 import random
 import time
 from dataclasses import asdict, dataclass
@@ -71,6 +72,10 @@ class Config:
     log_every: int = 250
     timing_batches: int = 16
     timing_batch_size: int = 0
+    timing_batch_sizes: str = ""
+    save_checkpoints: bool = False
+    load_checkpoints: bool = False
+    checkpoint_tag: str = ""
     reinject_init: float = 0.20
     use_reinject: bool = True
     mixed_tasks: bool = False
@@ -94,7 +99,7 @@ class Config:
 
 def config_for_mode(mode: str) -> Config:
     cfg = Config(mode=mode)
-    if mode == "dry":
+    if mode in ("dry", "dry_sweep", "dry_sweep_reuse"):
         cfg.use_fake_model = True
         cfg.d_model = 64
         cfg.n_heads = 4
@@ -116,6 +121,18 @@ def config_for_mode(mode: str) -> Config:
         cfg.jump_layers = 1
         cfg.direct_steps = 4
         cfg.direct_layers = 2
+        if mode == "dry_sweep":
+            cfg.timing_batch_sizes = "1,2,4"
+            cfg.save_checkpoints = True
+            cfg.checkpoint_tag = "dry_router_seed{seed}"
+        elif mode == "dry_sweep_reuse":
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 0
+            cfg.jump_steps = 0
+            cfg.direct_steps = 0
+            cfg.timing_batch_sizes = "1,2,4"
+            cfg.load_checkpoints = True
+            cfg.checkpoint_tag = "dry_router_seed{seed}"
     elif mode == "retrofit_probe":
         pass
     elif mode == "jumprec_probe":
@@ -204,6 +221,38 @@ def config_for_mode(mode: str) -> Config:
         cfg.strict_need_agreement = False
         cfg.timing_batch_size = 1
         cfg.timing_batches = 64
+        cfg.eval_batches = 64
+        cfg.log_every = 500
+    elif mode == "mixed_core3_router_bsize_sweep":
+        cfg.mixed_tasks = True
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 5000
+        cfg.recurrent_steps = 7000
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 0
+        cfg.strict_need_agreement = False
+        cfg.timing_batches = 64
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "mixed_core3_router_seed{seed}"
+        cfg.eval_batches = 64
+        cfg.log_every = 500
+    elif mode == "mixed_core3_router_bsize_sweep_reuse":
+        cfg.mixed_tasks = True
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.strict_need_agreement = False
+        cfg.timing_batches = 64
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "mixed_core3_router_seed{seed}"
         cfg.eval_batches = 64
         cfg.log_every = 500
     elif mode == "mixed_core3_router_verifier1":
@@ -322,6 +371,23 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     if device.type == "cuda":
         print(f"[gpu] {torch.cuda.get_device_name()}")
     print(f"[config] {json.dumps(asdict(cfg), indent=2)}")
+
+    checkpoint_tag = (cfg.checkpoint_tag or f"{cfg.mode}_seed{{seed}}").format(seed=cfg.seed, mode=cfg.mode)
+    checkpoint_root = "/results/checkpoints" if os.path.isdir("/results") else "checkpoints"
+    checkpoint_path = os.path.join(checkpoint_root, f"{checkpoint_tag}.pt")
+
+    def save_checkpoint(model_obj, jumprec_obj=None):
+        if not cfg.save_checkpoints:
+            return
+        os.makedirs(checkpoint_root, exist_ok=True)
+        payload = {
+            "config": asdict(cfg),
+            "checkpoint_tag": checkpoint_tag,
+            "model_state": model_obj.state_dict(),
+            "jumprec_state": jumprec_obj.state_dict() if jumprec_obj is not None else None,
+        }
+        torch.save(payload, checkpoint_path)
+        print(f"[checkpoint] saved {checkpoint_path}", flush=True)
 
     letters = [chr(ord("A") + i) for i in range(cfg.n_nodes)]
     task_names = ["forward", "inverse", "alternate", "square"] if cfg.mixed_tasks else ["forward"]
@@ -594,6 +660,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         optim_groups.append({"params": block_params, "lr": cfg.lr_blocks, "weight_decay": cfg.weight_decay})
     optim_groups.append({"params": head_params, "lr": cfg.lr_head, "weight_decay": 0.0})
     opt = torch.optim.AdamW(optim_groups)
+    loaded_checkpoint = None
+    if cfg.load_checkpoints:
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"checkpoint not found: {checkpoint_path}")
+        loaded_checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(loaded_checkpoint["model_state"])
+        print(f"[checkpoint] loaded teacher {checkpoint_path}", flush=True)
 
     def active_hops_for_step(step: int, total_steps: int) -> int | None:
         if not cfg.curriculum_hops:
@@ -603,49 +676,53 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
 
     t0 = time.time()
     model.train()
-    for step in range(1, cfg.final_steps + 1):
-        active_hops = active_hops_for_step(step, cfg.final_steps)
-        input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size, active_hops)
-        logits = model(input_ids, attention_mask, lengths, cfg.loop_steps)
-        loss = F.cross_entropy(logits, target)
-        opt.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_([p for _, p in trainable], 1.0)
-        opt.step()
-        if step % cfg.log_every == 0 or step == cfg.final_steps:
-            print(
-                f"  final step {step:5d}/{cfg.final_steps} "
-                f"loss {loss.item():.4f} acc {accuracy(logits, target)*100:.1f}% "
-                f"hops {active_hops or cfg.max_hops} "
-                f"gate {torch.sigmoid(model.reinject_logit).item():.3f} "
-                f"elapsed {time.time()-t0:.1f}s",
-                flush=True,
-            )
+    if cfg.load_checkpoints:
+        print("[train] skipped teacher training from loaded checkpoint", flush=True)
+    else:
+        for step in range(1, cfg.final_steps + 1):
+            active_hops = active_hops_for_step(step, cfg.final_steps)
+            input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size, active_hops)
+            logits = model(input_ids, attention_mask, lengths, cfg.loop_steps)
+            loss = F.cross_entropy(logits, target)
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_([p for _, p in trainable], 1.0)
+            opt.step()
+            if step % cfg.log_every == 0 or step == cfg.final_steps:
+                print(
+                    f"  final step {step:5d}/{cfg.final_steps} "
+                    f"loss {loss.item():.4f} acc {accuracy(logits, target)*100:.1f}% "
+                    f"hops {active_hops or cfg.max_hops} "
+                    f"gate {torch.sigmoid(model.reinject_logit).item():.3f} "
+                    f"elapsed {time.time()-t0:.1f}s",
+                    flush=True,
+                )
 
-    for step in range(1, cfg.recurrent_steps + 1):
-        active_hops = active_hops_for_step(step, cfg.recurrent_steps)
-        input_ids, attention_mask, lengths, target, step_targets, _, _ = batch_encoded(cfg.batch_size, active_hops)
-        logits_by_loop = model.collect_logits(input_ids, attention_mask, lengths, cfg.loop_steps, include_zero=False)
-        losses = []
-        for i, logits_i in enumerate(logits_by_loop):
-            weight = 2.0 if i == cfg.loop_steps - 1 else 1.0
-            losses.append(weight * F.cross_entropy(logits_i, step_targets[:, i]))
-        loss = torch.stack(losses).mean()
-        opt.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_([p for _, p in trainable], 1.0)
-        opt.step()
-        if step % cfg.log_every == 0 or step == cfg.recurrent_steps:
-            full_logits = logits_by_loop[-1]
-            one_logits = logits_by_loop[0]
-            print(
-                f"  recur step {step:5d}/{cfg.recurrent_steps} "
-                f"loss {loss.item():.4f} one {accuracy(one_logits, target)*100:.1f}% "
-                f"full {accuracy(full_logits, target)*100:.1f}% "
-                f"hops {active_hops or cfg.max_hops} "
-                f"elapsed {time.time()-t0:.1f}s",
-                flush=True,
-            )
+        for step in range(1, cfg.recurrent_steps + 1):
+            active_hops = active_hops_for_step(step, cfg.recurrent_steps)
+            input_ids, attention_mask, lengths, target, step_targets, _, _ = batch_encoded(cfg.batch_size, active_hops)
+            logits_by_loop = model.collect_logits(input_ids, attention_mask, lengths, cfg.loop_steps, include_zero=False)
+            losses = []
+            for i, logits_i in enumerate(logits_by_loop):
+                weight = 2.0 if i == cfg.loop_steps - 1 else 1.0
+                losses.append(weight * F.cross_entropy(logits_i, step_targets[:, i]))
+            loss = torch.stack(losses).mean()
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_([p for _, p in trainable], 1.0)
+            opt.step()
+            if step % cfg.log_every == 0 or step == cfg.recurrent_steps:
+                full_logits = logits_by_loop[-1]
+                one_logits = logits_by_loop[0]
+                print(
+                    f"  recur step {step:5d}/{cfg.recurrent_steps} "
+                    f"loss {loss.item():.4f} one {accuracy(one_logits, target)*100:.1f}% "
+                    f"full {accuracy(full_logits, target)*100:.1f}% "
+                    f"hops {active_hops or cfg.max_hops} "
+                    f"elapsed {time.time()-t0:.1f}s",
+                    flush=True,
+                )
+        save_checkpoint(model)
 
     def eval_model():
         model.eval()
@@ -749,7 +826,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     jumprec = None
     jump_summary = None
     direct_summary = None
-    if cfg.jump_steps > 0:
+    should_use_jumprec = cfg.jump_steps > 0 or (
+        loaded_checkpoint is not None and loaded_checkpoint.get("jumprec_state") is not None
+    )
+    if should_use_jumprec:
         for p in model.parameters():
             p.requires_grad_(False)
         model.eval()
@@ -899,44 +979,49 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
 
         jumprec = JumpRec(model).to(device)
         print(f"[jumprec] trainable params={sum(p.numel() for p in jumprec.parameters() if p.requires_grad)/1e6:.3f}M")
-        opt_j = torch.optim.AdamW([p for p in jumprec.parameters() if p.requires_grad], lr=cfg.jump_lr)
-        t1 = time.time()
-        jumprec.train()
-        for step in range(1, cfg.jump_steps + 1):
-            input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
-            with torch.no_grad():
-                state0, layer_mask, position_ids, position_embeddings, teacher_states, teacher_logits = teacher_collect(
-                    input_ids,
-                    attention_mask,
-                    lengths,
+        if loaded_checkpoint is not None and loaded_checkpoint.get("jumprec_state") is not None:
+            jumprec.load_state_dict(loaded_checkpoint["jumprec_state"])
+            print("[checkpoint] loaded JumpRec", flush=True)
+        else:
+            opt_j = torch.optim.AdamW([p for p in jumprec.parameters() if p.requires_grad], lr=cfg.jump_lr)
+            t1 = time.time()
+            jumprec.train()
+            for step in range(1, cfg.jump_steps + 1):
+                input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(cfg.batch_size)
+                with torch.no_grad():
+                    state0, layer_mask, position_ids, position_embeddings, teacher_states, teacher_logits = teacher_collect(
+                        input_ids,
+                        attention_mask,
+                        lengths,
+                    )
+                    soft_teacher = F.softmax(teacher_logits, dim=-1)
+                out = jumprec.forward_encoded(state0.detach(), layer_mask, position_ids, position_embeddings, lengths)
+                ce_losses, distill_losses, verifier_losses = [], [], []
+                for corrections in range(cfg.max_correct + 1):
+                    final_logits = out["logits"][corrections]
+                    ce_losses.append(F.cross_entropy(final_logits, target))
+                    distill_losses.append(
+                        F.kl_div(F.log_softmax(final_logits, dim=-1), soft_teacher, reduction="batchmean")
+                    )
+                    good = (final_logits.detach().argmax(dim=-1) == target).float()
+                    verifier_losses.append(F.binary_cross_entropy_with_logits(out["verify"][corrections], good))
+                loss = (
+                    torch.stack(ce_losses).mean()
+                    + 0.2 * torch.stack(distill_losses).mean()
+                    + cfg.verifier_loss_weight * torch.stack(verifier_losses).mean()
                 )
-                soft_teacher = F.softmax(teacher_logits, dim=-1)
-            out = jumprec.forward_encoded(state0.detach(), layer_mask, position_ids, position_embeddings, lengths)
-            ce_losses, distill_losses, verifier_losses = [], [], []
-            for corrections in range(cfg.max_correct + 1):
-                final_logits = out["logits"][corrections]
-                ce_losses.append(F.cross_entropy(final_logits, target))
-                distill_losses.append(
-                    F.kl_div(F.log_softmax(final_logits, dim=-1), soft_teacher, reduction="batchmean")
-                )
-                good = (final_logits.detach().argmax(dim=-1) == target).float()
-                verifier_losses.append(F.binary_cross_entropy_with_logits(out["verify"][corrections], good))
-            loss = (
-                torch.stack(ce_losses).mean()
-                + 0.2 * torch.stack(distill_losses).mean()
-                + cfg.verifier_loss_weight * torch.stack(verifier_losses).mean()
-            )
-            opt_j.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(jumprec.parameters(), 1.0)
-            opt_j.step()
-            if step % cfg.log_every == 0 or step == cfg.jump_steps:
-                print(
-                    f"  jump step {step:5d}/{cfg.jump_steps} loss {loss.item():.4f} "
-                    f"ce0 {ce_losses[0].item():.3f} ce{cfg.max_correct} {ce_losses[-1].item():.3f} "
-                    f"elapsed {time.time()-t1:.1f}s",
-                    flush=True,
-                )
+                opt_j.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(jumprec.parameters(), 1.0)
+                opt_j.step()
+                if step % cfg.log_every == 0 or step == cfg.jump_steps:
+                    print(
+                        f"  jump step {step:5d}/{cfg.jump_steps} loss {loss.item():.4f} "
+                        f"ce0 {ce_losses[0].item():.3f} ce{cfg.max_correct} {ce_losses[-1].item():.3f} "
+                        f"elapsed {time.time()-t1:.1f}s",
+                        flush=True,
+                    )
+            save_checkpoint(model, jumprec)
 
         def eval_jumprec():
             jumprec.eval()
@@ -1168,8 +1253,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             if device.type == "cuda":
                 torch.cuda.synchronize()
 
-        def time_fn(fn):
-            timing_bsz = cfg.timing_batch_size or cfg.batch_size
+        def time_fn(fn, timing_bsz: int | None = None):
+            timing_bsz = timing_bsz or cfg.timing_batch_size or cfg.batch_size
             with torch.no_grad():
                 for _ in range(2):
                     input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(timing_bsz)
@@ -1309,6 +1394,40 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 return last
 
             out["jumprec_serial_agree_080_ms_per_batch"] = time_fn(serial_jumprec_agree)
+        if cfg.timing_batch_sizes:
+            sweep = {}
+            for timing_bsz in [int(x.strip()) for x in cfg.timing_batch_sizes.split(",") if x.strip()]:
+                item = {
+                    "timing_batch_size": float(timing_bsz),
+                    "one_loop_ms_per_batch": time_fn(
+                        lambda ids, mask, lens: model(ids, mask, lens, 1),
+                        timing_bsz,
+                    ),
+                    "full_loop_ms_per_batch": time_fn(
+                        lambda ids, mask, lens: model(ids, mask, lens, cfg.loop_steps),
+                        timing_bsz,
+                    ),
+                }
+                if jumprec is not None:
+                    item["jumprec_all_budgets_ms_per_batch"] = time_fn(
+                        lambda ids, mask, lens: jumprec.forward_encoded(*model.encode(ids, mask), lens),
+                        timing_bsz,
+                    )
+                    item["jumprec_serial_080_ms_per_batch"] = time_fn(serial_jumprec, timing_bsz)
+                    item["jumprec_serial_090_ms_per_batch"] = time_fn(
+                        lambda ids, mask, lens: serial_jumprec(ids, mask, lens, 0.90),
+                        timing_bsz,
+                    )
+                    item["jumprec_serial_095_ms_per_batch"] = time_fn(
+                        lambda ids, mask, lens: serial_jumprec(ids, mask, lens, 0.95),
+                        timing_bsz,
+                    )
+                    item["jumprec_serial_agree_080_ms_per_batch"] = time_fn(
+                        serial_jumprec_agree,
+                        timing_bsz,
+                    )
+                sweep[str(timing_bsz)] = item
+            out["batch_size_sweep"] = sweep
         model.train()
         return out
 
@@ -1359,6 +1478,8 @@ if __name__ == "__main__":
         default="dry",
         choices=[
             "dry",
+            "dry_sweep",
+            "dry_sweep_reuse",
             "retrofit_probe",
             "jumprec_probe",
             "jumprec_no_adapter",
@@ -1372,6 +1493,8 @@ if __name__ == "__main__":
             "mixed_core3_jumprec_direct",
             "mixed_core3_router_no_agree",
             "mixed_core3_router_no_agree_b1",
+            "mixed_core3_router_bsize_sweep",
+            "mixed_core3_router_bsize_sweep_reuse",
             "mixed_core3_router_verifier1",
             "retrofit_8n4h",
             "retrofit_8n4h_curriculum",
@@ -1388,8 +1511,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.local:
         raise SystemExit("Use `modal run run_recurrent_smol.py --mode retrofit_probe`, or add `--local`.")
-    if args.mode != "dry":
-        raise SystemExit("Local CPU guard: only --mode dry is allowed locally.")
+    if args.mode not in ("dry", "dry_sweep", "dry_sweep_reuse"):
+        raise SystemExit("Local CPU guard: only dry modes are allowed locally.")
     cfg = config_for_mode(args.mode)
     if args.seed is not None:
         cfg.seed = args.seed
