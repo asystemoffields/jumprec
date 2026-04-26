@@ -1566,3 +1566,55 @@ more meaningful hard-case result than the earlier easy/mixed result.
 
 The caveat is equally important: only two of three teacher seeds became strong.
 The bottleneck is now teacher stability, not JumpRec on a good teacher.
+
+## 2026-04-26 - stratified-hop stability repair
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_teacher --seed 202
+```
+
+This was the follow-up to the weak max-hop-only seed 202 teacher. Instead of
+sampling 70% max-hop examples, the stratified run sampled hops with weights
+`0.10,0.20,0.35,0.35` and weighted hop losses as `1.0,1.2,2.0,2.0`.
+
+Seed-202 teacher comparison:
+
+| Recipe | Full Teacher | Hop 1 | Hop 2 | Hop 3 | Hop 4 | Direct Control |
+|---|---:|---:|---:|---:|---:|---:|
+| Max-hop hard replay | 76.87% | 99.17% | 73.08% | 50.41% | 86.37% | 58.85% |
+| Stratified hard replay | 99.51% | 100.00% | 99.83% | 99.94% | 98.27% | 91.62% |
+
+Loop-depth profile for the stratified teacher:
+
+| Loops | Final-target Accuracy |
+|---:|---:|
+| 0 | 15.01% |
+| 1 | 41.02% |
+| 2 | 59.31% |
+| 3 | 78.16% |
+| 4 | 99.46% |
+| 5 | 99.59% |
+| 6 | 99.51% |
+
+Interpretation:
+
+This is a major correction to the prior caveat. The seed-202 failure appears
+to have been caused by max-hop-only pressure starving intermediate hard hops,
+especially hop 3. Stratified hard replay repaired the same seed from 76.87% to
+99.51% uniform full-loop accuracy. It also raised the direct baseline to
+91.62%, but the direct model still fails the hardest hop relative to recurrence
+at hop 4: 69.08% direct versus 98.27% recurrent.
+
+The current best teacher recipe for 8/4 is therefore stratified hard replay, not
+70% max-hop replay. The next best experiment is:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_jumprec --seed 202
+```
+
+Run JumpRec on this repaired stratified seed-202 checkpoint. If JumpRec retains
+the teacher while saving compute, then the hard-case story becomes much cleaner:
+stratified recurrence training creates a robust teacher, and JumpRec compresses
+the recurrent compute.

@@ -77,6 +77,11 @@ On the two strong repaired teachers, JumpRec matches or beats the full teacher
 while using about 4.4 of 18 recurrent core layers at threshold 0.90, with about
 a 1.9x batch-1 speedup.
 
+The likely fix is stratified hard-hop replay. On the previously weak seed 202,
+sampling hops with weights `0.10,0.20,0.35,0.35` and loss weights
+`1.0,1.2,2.0,2.0` raised full-loop accuracy from 76.9% to 99.5% under uniform
+hop eval. The next test is JumpRec on that stratified seed-202 checkpoint.
+
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
 ## Scaling Constraint
@@ -156,10 +161,10 @@ modal run run_recurrent_smol.py --mode core3_8n4h_strathop_jumprec
 
 1. Make the mixed/core3 small-batch result the current local-inference
    headline, while keeping the synthetic-task caveat explicit.
-2. Seed-confirm the hard-hop 8/4 teacher and JumpRec result before treating it
-   as a robust hard-problem result.
-3. Use the 8/4 result to tune a less biased hard-case curriculum, since hop-3
-   remains softer than hop-4 after max-hop replay.
+2. Run `core3_8n4h_strathop_jumprec --seed 202` to test JumpRec on the repaired
+   stratified teacher.
+3. Seed-confirm stratified hard-hop replay on seeds 42 and 101, then compare it
+   against the max-hop-only recipe.
 4. Keep scale portability in the design loop: favor block-level mechanisms that
    can survive 2B, 9B, and larger serving economics.
 5. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
