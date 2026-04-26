@@ -9,6 +9,7 @@ Local shape sanity:
 
 H100 run:
     modal run run_jumprec_smol.py --mode smol_pointer
+    modal run run_jumprec_smol.py --mode smol_workspace
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ class Config:
     d_ff: int = 1536
     adapter_rank: int = 8
     input_adapter_blocks: int = 0
+    use_workspace: bool = False
+    workspace_tokens: int = 8
     teacher_final_steps: int = 0
     teacher_steps: int = 800
     jump_steps: int = 1000
@@ -77,6 +80,8 @@ def config_for_mode(mode: str) -> Config:
     cfg = Config(mode=mode)
     if mode == "dry":
         cfg.use_fake_encoder = True
+        cfg.use_workspace = True
+        cfg.workspace_tokens = 4
         cfg.n_nodes = 6
         cfg.max_hops = 3
         cfg.max_correct = 2
@@ -110,6 +115,20 @@ def config_for_mode(mode: str) -> Config:
         cfg.n_nodes = 6
         cfg.max_hops = 3
         cfg.max_correct = 3
+        cfg.input_adapter_blocks = 2
+        cfg.teacher_final_steps = 5000
+        cfg.teacher_steps = 3000
+        cfg.jump_steps = 3000
+        cfg.direct_steps = 3000
+        cfg.batch_size = 64
+        cfg.eval_batches = 64
+        cfg.log_every = 250
+    elif mode == "smol_workspace":
+        cfg.n_nodes = 6
+        cfg.max_hops = 3
+        cfg.max_correct = 3
+        cfg.use_workspace = True
+        cfg.workspace_tokens = 8
         cfg.input_adapter_blocks = 2
         cfg.teacher_final_steps = 5000
         cfg.teacher_steps = 3000
@@ -280,12 +299,19 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 activation="gelu",
             )
 
-        def forward(self, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        def forward(self, x: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
+            if attention_mask is None or attention_mask.size(1) != x.size(1):
+                attention_mask = torch.ones(x.shape[:2], dtype=torch.bool, device=x.device)
             return self.layer(x, src_key_padding_mask=~attention_mask)
 
     def gather_last(state: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         idx = lengths.view(-1, 1, 1).expand(-1, 1, state.size(-1))
         return state.gather(1, idx).squeeze(1)
+
+    def read_answer_state(state: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        if cfg.use_workspace:
+            return state[:, -1]
+        return gather_last(state, lengths)
 
     class LoopedRefiner(nn.Module):
         def __init__(self):
@@ -295,19 +321,34 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 nn.Linear(cfg.d_model, cfg.d_model),
             )
             self.input_adapter = nn.ModuleList([TransformerBlock() for _ in range(cfg.input_adapter_blocks)])
+            self.workspace = nn.Parameter(torch.zeros(cfg.workspace_tokens, cfg.d_model)) if cfg.use_workspace else None
             self.loop_block = TransformerBlock()
             self.step_emb = nn.Parameter(torch.zeros(cfg.loop_steps, cfg.d_model))
             self.norm = nn.LayerNorm(cfg.d_model)
             self.head = nn.Linear(cfg.d_model, cfg.n_nodes)
             nn.init.normal_(self.step_emb, std=0.02)
+            if self.workspace is not None:
+                nn.init.normal_(self.workspace, std=0.02)
 
         def encode(self, hidden: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
-            state = self.input_proj(hidden)
+            text_state = self.input_proj(hidden)
+            state = text_state
+            if self.workspace is not None:
+                workspace = self.workspace.view(1, cfg.workspace_tokens, cfg.d_model).expand(hidden.size(0), -1, -1)
+                state = torch.cat([workspace, text_state], dim=1)
+                if attention_mask is None:
+                    text_mask = torch.ones(text_state.shape[:2], dtype=torch.bool, device=text_state.device)
+                else:
+                    text_mask = attention_mask
+                workspace_mask = torch.ones((hidden.size(0), cfg.workspace_tokens), dtype=torch.bool, device=hidden.device)
+                attention_mask = torch.cat([workspace_mask, text_mask], dim=1)
             if self.input_adapter:
                 if attention_mask is None:
                     attention_mask = torch.ones(state.shape[:2], dtype=torch.bool, device=state.device)
                 for block in self.input_adapter:
                     state = block(state, attention_mask)
+            if self.workspace is not None:
+                state = state[:, : cfg.workspace_tokens]
             return state
 
         def loop_once(self, state: torch.Tensor, attention_mask: torch.Tensor, step_idx: int) -> torch.Tensor:
@@ -320,7 +361,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             return state
 
         def classify(self, state: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-            return self.head(self.norm(gather_last(state, lengths)))
+            return self.head(self.norm(read_answer_state(state, lengths)))
 
         def collect_from_state(self, state, attention_mask, lengths, start_step: int, n_steps: int):
             logits = []
@@ -372,7 +413,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         def jump(self, state0, attention_mask, lengths, corrections: int):
             state = self.jump_block(state0 + self.landing_emb[corrections].view(1, 1, -1), attention_mask)
             if self.adapter is not None:
-                ctx = gather_last(state0, lengths) + self.landing_emb[corrections].view(1, -1)
+                ctx = read_answer_state(state0, lengths) + self.landing_emb[corrections].view(1, -1)
                 state = state + self.adapter(state, ctx)
             return state
 
@@ -383,7 +424,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             top2 = probs.topk(2, dim=-1).values
             margin = top2[:, 0:1] - top2[:, 1:2]
             max_prob = top2[:, 0:1]
-            return torch.cat([self.teacher.norm(gather_last(state, lengths)), entropy, margin, max_prob], dim=-1)
+            return torch.cat([self.teacher.norm(read_answer_state(state, lengths)), entropy, margin, max_prob], dim=-1)
 
         def forward_from_state(self, state0, attention_mask, lengths):
             landing_states, final_states, logits, verify = [], [], [], []
@@ -733,6 +774,7 @@ if __name__ == "__main__":
             "smol_pointer",
             "smol_pointer_easy",
             "smol_pointer_adapter",
+            "smol_workspace",
             "smol_mix",
             "smol_pointer_long",
         ],

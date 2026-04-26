@@ -21,9 +21,22 @@ is exercised in practice.
 
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
+The pretrained-LM crash tests are currently negative. Frozen SmolLM2 final
+states, input adapters, curriculum warmup, and a latent workspace sidecar have
+not produced a competent looped teacher. The evidence now points toward a true
+recurrent-depth LM retrofit rather than another frozen hidden-state wrapper.
+
+Current looped-transformer recipes usually apply recurrence inside the model
+path itself: a prelude block encodes the input, a shared recurrent block is
+looped, and a coda block produces logits. Recent work also emphasizes input
+reinjection, loop/time conditioning, recurrence curricula, adaptive exits, and
+stability constraints. JumpRec should be layered on top only after that
+full-loop recurrent model is strong.
+
 ## Files
 
 - `run_jumprec_v0.py`: Modal/local experiment runner.
+- `run_jumprec_smol.py`: SmolLM2 crash-test runner.
 - `JUMPREC_SPEC.md`: architecture sketch and experimental framing.
 - `JUMPREC_RESULTS.md`: run history, tables, and interpretation.
 - `requirements.txt`: Python package dependencies.
@@ -44,11 +57,10 @@ modal run run_jumprec_v0.py --mode quick_mix_strict
 
 ## Current Next Steps
 
-1. Repair the pretrained-LM interface. Frozen SmolLM2 final hidden states have
-   not yet yielded a competent looped teacher, even with input adapters and
-   final-answer warmup.
-2. Add a structured answer/query token interface and compare SmolLM2 states
-   against learned token embeddings on the exact same textualized task.
-3. Try intermediate SmolLM2 layer states before using LoRA.
+1. Build a real recurrent-depth SmolLM2 retrofit: prelude, shared recurrent
+   core, coda, and explicit input reinjection.
+2. Train it with a recurrence curriculum and verify that increasing loops helps
+   before adding JumpRec.
+3. Add JumpRec only after the recurrent full-loop teacher is competent.
 4. Keep the synthetic suite as the regression test; do not make JumpRec claims
    on SmolLM2 until the full-loop teacher is strong.

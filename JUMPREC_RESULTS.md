@@ -607,3 +607,72 @@ The right next move is to change the representation interface more radically:
 This result reinforces the boundary: JumpRec is promising on a clean recurrent
 state space, but porting it to pretrained LM hidden states requires first
 building a competent looped teacher interface.
+
+## 2026-04-26 - SmolLM2 workspace sidecar attempt
+
+Code changes:
+
+- Added `smol_workspace`.
+- Prepends trainable latent workspace tokens to frozen SmolLM2 hidden states.
+- Runs trainable input-adapter blocks over `[workspace, text]`.
+- Keeps only the workspace tokens for the recurrent teacher, JumpRec, and
+  direct baseline.
+
+Commands:
+
+```text
+python run_jumprec_smol.py --local --mode dry
+modal run run_jumprec_smol.py --mode smol_workspace
+```
+
+Configuration:
+
+- Frozen `HuggingFaceTB/SmolLM2-135M`
+- 6 nodes / 3 hops
+- 8 workspace tokens
+- 5 full-loop blocks
+- 5,000 final-answer teacher warmup steps
+- 3,000 recurrent teacher steps
+- 3,000 JumpRec steps
+- 3,000 direct baseline steps
+
+### Results
+
+| Mode | Teacher Full | JumpRec Best | Strict Fallback Acc | Full-Loop Fallback | Direct Acc |
+|---|---:|---:|---:|---:|---:|
+| smol_pointer_adapter | 31.84% | 35.89% | 31.79% | n/a | 36.21% |
+| smol_workspace | 21.66% | 30.62% | 30.13% | 94.36% | 33.40% |
+
+Timing on H100:
+
+| Metric | smol_workspace |
+|---|---:|
+| Teacher full loop | 29.56 ms/batch |
+| All JumpRec budgets | 34.39 ms/batch |
+
+### Interpretation
+
+This is a second negative result for the frozen-SmollLM2-wrapper family. The
+latent workspace did not become a competent recurrent scratchpad. In fact, the
+full-loop teacher was worse than the prior adapter/curriculum run, and the
+direct baseline beat both the teacher and strict JumpRec fallback.
+
+The result is especially useful in light of current looped-transformer recipes:
+successful recurrent-depth language models usually place recurrence inside the
+model path itself, commonly using a prelude/recurrent/coda split, recurrent
+input injection, loop or time conditioning, recurrence curricula, and sometimes
+adaptive exit objectives. Our sidecar compressed frozen LM outputs once, then
+looped only the workspace. That is still too disconnected from how looped LMs
+are normally trained.
+
+The next implementation direction should move away from frozen sidecar
+scratchpads and toward an actual recurrent-depth LM retrofit:
+
+- Split a pretrained small LM into prelude, recurrent core, and coda.
+- Reuse the core for multiple recurrent steps with explicit input reinjection.
+- Train with a recurrence curriculum rather than jumping immediately to a fixed
+  loop depth.
+- Add JumpRec only after the recurrent full-depth model is competent.
+
+The synthetic JumpRec results remain promising; the SmolLM2 results say the LM
+interface is still wrong.
