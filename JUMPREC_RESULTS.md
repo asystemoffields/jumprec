@@ -1114,3 +1114,61 @@ Next direction:
 3. If not seed-stable, train the verifier on the whole accept/reject rule or
    add a learned uncertainty objective instead of simply increasing verifier
    loss weight.
+
+## 2026-04-26 - agreement-free router seed confirmation
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode mixed_core3_router_no_agree --seed 101
+modal run run_recurrent_smol.py --mode mixed_core3_router_no_agree --seed 202
+```
+
+Together with the seed-42 preliminary run, this confirms the agreement-free
+router as an accuracy result but not yet as a batch-64 wall-clock result.
+
+Agreement-free router, threshold 0.90:
+
+| Seed | Teacher Full | Router Acc | Avg Core Layers | Savings | Full Timing | Serial Timing |
+|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 98.71% | 99.17% | 2.11 / 15 | 85.94% | 28.82 ms | 26.63 ms |
+| 101 | 98.49% | 98.58% | 2.25 / 15 | 85.01% | 28.28 ms | 39.75 ms |
+| 202 | 96.56% | 97.12% | 2.85 / 15 | 81.03% | 28.07 ms | 41.46 ms |
+| Mean | 97.92% | 98.29% | 2.40 / 15 | 84.00% | 28.39 ms | 35.95 ms |
+
+Threshold sweep, mean over seeds:
+
+| Threshold | Router Acc | Avg Core Layers | Savings | Serial Timing |
+|---:|---:|---:|---:|---:|
+| 0.80 | 97.88% | 2.22 / 15 | 85.23% | 31.50 ms |
+| 0.90 | 98.29% | 2.40 / 15 | 84.00% | 35.95 ms |
+| 0.95 | 98.40% | 2.60 / 15 | 82.70% | 39.89 ms |
+
+Agreement-filtered eval is still more accurate: threshold 0.80 gives the same
+98.74% mean accuracy as the earlier strict mixed/core3 result, at about 2.31
+of 15 core layers. But the corrected agreement-aware serial path is around 60
+ms/batch in these router-only runs, so agreement is not acceptable as the final
+speed path.
+
+Interpretation:
+
+The verifier is good enough to route without agreement in the accuracy sense:
+threshold 0.90 beats the full teacher mean and the prior direct control mean
+while using only about 2.40 of 15 counted recurrent core layers. The weaker
+seed 202 remains the limiting case, but even there the no-agreement router
+beats the weak full teacher by about 0.56 points.
+
+The wall-clock result did not seed-confirm at batch size 64. Seed 42 was
+faster than full, but seeds 101 and 202 were much slower despite lower counted
+core usage. That points to implementation overhead and GPU utilization:
+serial subset routing launches several small dynamic batches, which can erase
+the theoretical compute savings on an H100 batch-64 benchmark.
+
+Next direction:
+
+1. Measure timing at batch size 1, which is closer to local interactive LLM
+   use and may reward adaptive exits more than batch-64 throughput does.
+2. If batch-1 timing is still poor, the next work is a fused or static router
+   implementation rather than more verifier calibration.
+3. Keep the no-agreement verifier as the main research path; increasing
+   verifier loss did not improve the trade-off.

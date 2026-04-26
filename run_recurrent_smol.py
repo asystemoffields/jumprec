@@ -70,6 +70,7 @@ class Config:
     weight_decay: float = 0.01
     log_every: int = 250
     timing_batches: int = 16
+    timing_batch_size: int = 0
     reinject_init: float = 0.20
     use_reinject: bool = True
     mixed_tasks: bool = False
@@ -189,6 +190,20 @@ def config_for_mode(mode: str) -> Config:
         cfg.jump_steps = 4500
         cfg.direct_steps = 0
         cfg.strict_need_agreement = False
+        cfg.eval_batches = 64
+        cfg.log_every = 500
+    elif mode == "mixed_core3_router_no_agree_b1":
+        cfg.mixed_tasks = True
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 5000
+        cfg.recurrent_steps = 7000
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 0
+        cfg.strict_need_agreement = False
+        cfg.timing_batch_size = 1
+        cfg.timing_batches = 64
         cfg.eval_batches = 64
         cfg.log_every = 500
     elif mode == "mixed_core3_router_verifier1":
@@ -1154,14 +1169,15 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 torch.cuda.synchronize()
 
         def time_fn(fn):
+            timing_bsz = cfg.timing_batch_size or cfg.batch_size
             with torch.no_grad():
                 for _ in range(2):
-                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(cfg.batch_size)
+                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(timing_bsz)
                     fn(input_ids, attention_mask, lengths)
                 sync()
                 start = time.perf_counter()
                 for _ in range(cfg.timing_batches):
-                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(cfg.batch_size)
+                    input_ids, attention_mask, lengths, _, _, _, _ = batch_encoded(timing_bsz)
                     fn(input_ids, attention_mask, lengths)
                 sync()
                 return 1000.0 * (time.perf_counter() - start) / cfg.timing_batches
@@ -1169,6 +1185,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         model.eval()
         out = {
             "batch_size": float(cfg.batch_size),
+            "timing_batch_size": float(cfg.timing_batch_size or cfg.batch_size),
             "one_loop_ms_per_batch": time_fn(lambda ids, mask, lens: model(ids, mask, lens, 1)),
             "full_loop_ms_per_batch": time_fn(lambda ids, mask, lens: model(ids, mask, lens, cfg.loop_steps)),
         }
@@ -1354,6 +1371,7 @@ if __name__ == "__main__":
             "mixed_jumprec_direct",
             "mixed_core3_jumprec_direct",
             "mixed_core3_router_no_agree",
+            "mixed_core3_router_no_agree_b1",
             "mixed_core3_router_verifier1",
             "retrofit_8n4h",
             "retrofit_8n4h_curriculum",

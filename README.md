@@ -35,11 +35,12 @@ check, and the agreement-aware serial router averages 49.19 ms/batch. The
 current claim is therefore compute-layer efficiency plus promising routing
 behavior, not finished inference speed.
 
-A first agreement-free router probe on seed 42 is more promising: threshold
-0.90 reaches 99.17% accuracy while using 2.11 of 15 recurrent core layers and
-running at 26.63 ms/batch versus 28.82 ms/batch for the full teacher. That is
-not a headline until seed-confirmed, but it is the clearest path toward turning
-the counted savings into actual local inference savings.
+A seed-confirmed agreement-free router is positive on accuracy but not yet on
+batch-64 wall-clock. At threshold 0.90 it reaches 98.29% mean accuracy while
+using 2.40 of 15 recurrent core layers, beating the 97.92% full teacher mean
+and prior 95.97% direct-control mean. But serial timing averages 35.95 ms/batch
+versus 28.39 ms/batch for the full teacher. The next question is whether this
+becomes favorable at batch size 1, which is closer to local interactive use.
 
 The main remaining caution is robustness. The 8-node / 4-hop setting is still
 limited by teacher quality and max-depth failures; JumpRec cannot reliably
@@ -90,9 +91,10 @@ modal run run_recurrent_smol.py --mode mixed_probe
 
 ## Current Next Steps
 
-1. Seed-confirm the mixed/core3 agreement-free router at threshold 0.90.
-2. If it holds, make the strict router agreement-free but calibrated across
-   harder seeds and tasks.
+1. Measure the agreement-free router at batch size 1, where local interactive
+   inference may benefit more from adaptive exits than H100 batch-64 throughput.
+2. If batch-1 timing is still poor, work on a fused/static router path rather
+   than more verifier calibration.
 3. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
    better balanced curriculum; core depth alone did not solve 4-hop cases.
 4. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
