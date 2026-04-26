@@ -44,12 +44,11 @@ modal run run_jumprec_v0.py --mode quick_mix_strict
 
 ## Current Next Steps
 
-1. Add same-run policy sweeps so verifier-only and strict fallback policies are
-   evaluated against the exact same trained weights.
-2. Add a teacher-quality gate for mixed tasks; retry or extend training when the
-   teacher fails a subtask.
-3. Add stronger controls: equal-parameter mixed direct baseline, wall-clock GPU
-   timing, and broader algorithmic task families.
-4. Move toward pretrained local LLM integration only after the mechanism holds
-   across mixed tasks and routing/fallback calibration is reliable.
-
+1. Use SmolLM2-135M as the first pretrained local-LM crash test dummy.
+2. Wrap the pretrained model conservatively: freeze the base, add a recurrent
+   refinement block over hidden states, train a JumpRec module to skip toward
+   later refinement states, and keep full-loop fallback.
+3. Implement serial early-exit routing. Evaluating every budget in parallel is
+   useful for analysis, but it is slower than the full loop and is not the
+   intended inference path.
+4. Keep the synthetic suite as a regression test while moving to text tasks.

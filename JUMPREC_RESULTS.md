@@ -421,3 +421,69 @@ When the teacher does not solve a subtask, fallback cannot magically repair the
 teacher. The next implementation change should add a teacher-quality gate:
 continue training, lower LR, or mark the run invalid when full-loop accuracy is
 below a target such as 99.5%.
+
+## 2026-04-26 - pre-LLM decision round
+
+Code changes:
+
+- Added `quick_mix_round`: same trained weights, same-run policy sweep,
+  teacher-quality gate, mixed direct baseline, and H100 timing.
+- Teacher gate requires full-loop accuracy >= 99.5% and each mixed task >= 98%.
+  If the gate fails, the teacher receives 4,000 extra lower-LR steps.
+- Policy sweep evaluates verifier-only, margin+confidence, and strict
+  margin+confidence+next-budget-agreement policies on the exact same weights.
+
+Commands:
+
+```text
+modal run run_jumprec_v0.py --mode quick_mix_round --seed 42
+modal run run_jumprec_v0.py --mode quick_mix_round --seed 202
+```
+
+Seed 202 is intentionally included because it previously exposed a square-task
+teacher failure.
+
+### Results at Threshold 0.80
+
+| Seed | Gate Extra Steps | Teacher Full | Strict Fallback Acc | Block-Equiv | Savings | Full-Loop Fallback | Direct Acc |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 0 | 99.90% | 99.93% | 2.43 | 69.57% | 2.83% | 94.32% |
+| 202 | 4,000 | 99.91% | 99.89% | 2.27 | 71.66% | 2.10% | 91.02% |
+| Mean | 2,000 | 99.90% | 99.91% | 2.35 | 70.61% | 2.46% | 92.67% |
+
+### Policy Sweep at Threshold 0.80
+
+| Seed | Verifier-Only Fallback Acc | Margin+Confidence Fallback Acc | Strict Fallback Acc |
+|---:|---:|---:|---:|
+| 42 | 99.53% | 99.53% | 99.93% |
+| 202 | 99.41% | 99.44% | 99.89% |
+
+Strict routing costs slightly more fallback, but clearly improves reliability on
+the exact same trained weights. This is the first clean policy comparison.
+
+### Timing
+
+Measured on H100, batch size 384, 32 timing batches.
+
+| Metric | Seed 42 | Seed 202 | Mean |
+|---|---:|---:|---:|
+| Teacher full loop | 4.00 ms | 3.90 ms | 3.95 ms |
+| JumpRec c0 only | 2.84 ms | 2.45 ms | 2.64 ms |
+| JumpRec c6 only | 3.84 ms | 3.68 ms | 3.76 ms |
+| All budgets evaluated | 11.19 ms | 10.99 ms | 11.09 ms |
+| Direct baseline | 2.95 ms | 2.53 ms | 2.74 ms |
+
+### Interpretation
+
+This round clears the bar for moving to a small pretrained LM crash test. The
+teacher-quality gate fixed the known seed-202 failure, strict policy routing
+beat verifier-only routing in a same-run comparison, and the direct baseline
+remained far below JumpRec despite comparable trainable parameter count.
+
+The timing result is a warning label: evaluating all budgets is slower than the
+full teacher loop. The compute-savings story only turns into a wall-clock story
+if inference uses early-exit/serial routing, not parallel evaluation of every
+budget. The correct implementation target for an LM is therefore: try a cheap
+jump, verify, then run only the needed tail or full fallback.
+
+Next target: SmolLM2-135M as the first pretrained local-LM crash test dummy.

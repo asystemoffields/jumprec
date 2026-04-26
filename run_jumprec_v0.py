@@ -64,6 +64,12 @@ class Config:
     accept_min_margin: float = 0.0
     accept_min_prob: float = 0.0
     accept_require_next_agreement: bool = False
+    teacher_min_full_acc: float = 0.0
+    teacher_min_task_acc: float = 0.0
+    teacher_extra_steps: int = 0
+    teacher_extra_lr_scale: float = 0.5
+    run_direct_baseline: bool = False
+    timing_batches: int = 0
 
     @property
     def loop_steps(self) -> int:
@@ -99,6 +105,13 @@ def config_for_mode(mode: str) -> Config:
         cfg.accept_min_margin = 0.05
         cfg.accept_min_prob = 0.45
         cfg.accept_require_next_agreement = True
+    elif mode == "dry_round":
+        cfg = config_for_mode("dry_mixed")
+        cfg.mode = mode
+        cfg.teacher_min_full_acc = 0.0
+        cfg.teacher_min_task_acc = 0.0
+        cfg.run_direct_baseline = True
+        cfg.timing_batches = 2
     elif mode == "smoke":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -174,6 +187,19 @@ def config_for_mode(mode: str) -> Config:
         cfg.accept_min_margin = 0.05
         cfg.accept_min_prob = 0.45
         cfg.accept_require_next_agreement = True
+    elif mode == "quick_mix_direct3":
+        cfg = config_for_mode("quick_mix")
+        cfg.mode = mode
+        cfg.direct_blocks = 3
+        cfg.jump_steps = 7000
+    elif mode == "quick_mix_round":
+        cfg = config_for_mode("quick_mix_strict")
+        cfg.mode = mode
+        cfg.teacher_min_full_acc = 0.995
+        cfg.teacher_min_task_acc = 0.980
+        cfg.teacher_extra_steps = 4000
+        cfg.run_direct_baseline = True
+        cfg.timing_batches = 32
     elif mode == "full":
         cfg.d_model = 192
         cfg.d_ff = 768
@@ -488,20 +514,29 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     t0 = time.time()
     print("[teacher] training")
     train_hop_limit = cfg.train_max_hops or cfg.max_hops
-    for step in range(1, cfg.teacher_steps + 1):
-        ids, target, step_targets, _, _ = make_batch(cfg.batch_size, hop_limit=train_hop_limit)
-        logits_by_step, _ = teacher(ids, cfg.loop_steps, collect_logits=True)
-        losses = []
-        for i, logits_i in enumerate(logits_by_step):
-            weight = 2.0 if i == cfg.loop_steps - 1 else 1.0
-            losses.append(weight * F.cross_entropy(logits_i, step_targets[:, i]))
-        loss = torch.stack(losses).mean()
-        opt.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(teacher.parameters(), 1.0)
-        opt.step()
-        if step % cfg.log_every == 0 or step == cfg.teacher_steps:
-            print(f"  teacher step {step:5d}/{cfg.teacher_steps} loss {loss.item():.4f} elapsed {time.time()-t0:.1f}s", flush=True)
+
+    def train_teacher_steps(n_steps: int, start_step: int = 0, label: str = "teacher") -> None:
+        for local_step in range(1, n_steps + 1):
+            step = start_step + local_step
+            ids, target, step_targets, _, _ = make_batch(cfg.batch_size, hop_limit=train_hop_limit)
+            logits_by_step, _ = teacher(ids, cfg.loop_steps, collect_logits=True)
+            losses = []
+            for i, logits_i in enumerate(logits_by_step):
+                weight = 2.0 if i == cfg.loop_steps - 1 else 1.0
+                losses.append(weight * F.cross_entropy(logits_i, step_targets[:, i]))
+            loss = torch.stack(losses).mean()
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(teacher.parameters(), 1.0)
+            opt.step()
+            if local_step % cfg.log_every == 0 or local_step == n_steps:
+                print(
+                    f"  {label} step {step:5d}/{start_step + n_steps} "
+                    f"loss {loss.item():.4f} elapsed {time.time()-t0:.1f}s",
+                    flush=True,
+                )
+
+    train_teacher_steps(cfg.teacher_steps)
 
     def eval_teacher() -> Dict[str, object]:
         teacher.eval()
@@ -545,11 +580,39 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     teacher_eval = eval_teacher()
     print(f"[teacher eval] {json.dumps(teacher_eval, indent=2)}")
 
+    def teacher_quality_failures(eval_result: Dict[str, object]) -> List[str]:
+        failures = []
+        full_acc = float(eval_result["full_loop_acc"])
+        if cfg.teacher_min_full_acc and full_acc < cfg.teacher_min_full_acc:
+            failures.append(f"full_loop_acc {full_acc:.4f} < {cfg.teacher_min_full_acc:.4f}")
+        if cfg.teacher_min_task_acc:
+            by_task = eval_result.get("full_by_task", {})
+            for task_name, task_acc in by_task.items():
+                if task_acc is not None and float(task_acc) < cfg.teacher_min_task_acc:
+                    failures.append(f"{task_name} task acc {float(task_acc):.4f} < {cfg.teacher_min_task_acc:.4f}")
+        return failures
+
+    quality_failures = teacher_quality_failures(teacher_eval)
+    teacher_extra_used = 0
+    if quality_failures and cfg.teacher_extra_steps > 0:
+        print(f"[teacher gate] retrying: {quality_failures}", flush=True)
+        for group in opt.param_groups:
+            group["lr"] = cfg.lr_teacher * cfg.teacher_extra_lr_scale
+        teacher_extra_used = cfg.teacher_extra_steps
+        train_teacher_steps(cfg.teacher_extra_steps, start_step=cfg.teacher_steps, label="teacher-extra")
+        teacher_eval = eval_teacher()
+        quality_failures = teacher_quality_failures(teacher_eval)
+        print(f"[teacher eval after gate] {json.dumps(teacher_eval, indent=2)}")
+    if quality_failures:
+        print(f"[teacher gate] failed: {quality_failures}", flush=True)
+    else:
+        print("[teacher gate] passed", flush=True)
+
     for p in teacher.parameters():
         p.requires_grad_(False)
     teacher.eval()
 
-    if cfg.mode == "quick_direct3":
+    if cfg.mode in {"quick_direct3", "quick_mix_direct3"}:
         direct = DirectControlModel(teacher).to(device)
         n_direct_trainable = sum(p.numel() for p in direct.parameters() if p.requires_grad)
         print(f"[direct] trainable params={n_direct_trainable/1e6:.3f}M")
@@ -616,6 +679,11 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             "teacher_params": n_teacher,
             "direct_trainable_params": n_direct_trainable,
             "teacher_eval": teacher_eval,
+            "teacher_gate": {
+                "passed": not quality_failures,
+                "failures": quality_failures,
+                "extra_steps_used": teacher_extra_used,
+            },
             "direct_eval": direct_eval,
         }
 
@@ -680,6 +748,11 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     def eval_jumprec() -> Dict[str, object]:
         jumprec.eval()
         thresholds = [(0.70, "070"), (0.80, "080"), (0.90, "090"), (0.95, "095")]
+        policy_defs = {
+            "verifier_only": {"min_margin": 0.0, "min_prob": 0.0, "require_next_agreement": False},
+            "margin_conf": {"min_margin": 0.05, "min_prob": 0.45, "require_next_agreement": False},
+            "strict": {"min_margin": 0.05, "min_prob": 0.45, "require_next_agreement": True},
+        }
         metrics = {}
         for corrections in range(cfg.max_correct + 1):
             metrics[f"jump_c{corrections}_acc"] = 0.0
@@ -690,6 +763,17 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             metrics[f"fallback_{suffix}_acc"] = 0.0
             metrics[f"fallback_{suffix}_avg_correct_loops"] = 0.0
             metrics[f"fallback_{suffix}_full_loop_rate"] = 0.0
+        policy_sweep = {}
+        for policy_name in policy_defs:
+            policy_sweep[policy_name] = {}
+            for _, suffix in thresholds:
+                policy_sweep[policy_name][suffix] = {
+                    "adaptive_acc": 0.0,
+                    "adaptive_avg_correct_loops": 0.0,
+                    "fallback_acc": 0.0,
+                    "fallback_avg_correct_loops": 0.0,
+                    "fallback_full_loop_rate": 0.0,
+                }
         hop_compute_080: Dict[str, List[float]] = {str(i): [] for i in range(1, cfg.max_hops + 1)}
         hop_acc_080: Dict[str, List[float]] = {str(i): [] for i in range(1, cfg.max_hops + 1)}
         hop_fb_compute_080: Dict[str, List[float]] = {str(i): [] for i in range(1, cfg.max_hops + 1)}
@@ -714,13 +798,79 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 top2 = choice_probs.topk(2, dim=-1).values
                 margin_stack = top2[:, :, 0] - top2[:, :, 1]
                 max_prob_stack = top2[:, :, 0]
+                next_agreement_stack = torch.ones_like(prob_stack, dtype=torch.bool)
+                next_agreement_stack[:-1] = pred_stack[:-1] == pred_stack[1:]
+                next_agreement_stack[-1] = False
                 agreement_stack = torch.ones_like(prob_stack, dtype=torch.bool)
                 if cfg.accept_require_next_agreement:
-                    agreement_stack[:-1] = pred_stack[:-1] == pred_stack[1:]
-                    agreement_stack[-1] = False
+                    agreement_stack = next_agreement_stack
 
                 for corrections, pred_i in enumerate(preds):
                     metrics[f"jump_c{corrections}_acc"] += (pred_i == target).float().mean().item()
+
+                for policy_name, policy in policy_defs.items():
+                    policy_agreement_stack = (
+                        next_agreement_stack
+                        if policy["require_next_agreement"]
+                        else torch.ones_like(prob_stack, dtype=torch.bool)
+                    )
+                    for threshold, suffix in thresholds:
+                        chosen_policy = torch.full_like(target, cfg.max_correct)
+                        open_policy = torch.ones_like(target, dtype=torch.bool)
+                        for corrections in range(cfg.max_correct + 1):
+                            accept_policy = (
+                                open_policy
+                                & (prob_stack[corrections] >= threshold)
+                                & (margin_stack[corrections] >= policy["min_margin"])
+                                & (max_prob_stack[corrections] >= policy["min_prob"])
+                                & policy_agreement_stack[corrections]
+                            )
+                            chosen_policy = torch.where(
+                                accept_policy,
+                                torch.full_like(chosen_policy, corrections),
+                                chosen_policy,
+                            )
+                            open_policy = open_policy & ~accept_policy
+                        pred_policy = pred_stack.gather(0, chosen_policy.unsqueeze(0)).squeeze(0)
+                        policy_sweep[policy_name][suffix]["adaptive_acc"] += (
+                            pred_policy == target
+                        ).float().mean().item()
+                        policy_sweep[policy_name][suffix]["adaptive_avg_correct_loops"] += (
+                            chosen_policy.float().mean().item()
+                        )
+
+                        trusted_policy = torch.zeros_like(target, dtype=torch.bool)
+                        chosen_policy_fb = torch.full_like(target, cfg.loop_steps)
+                        pred_policy_fb = full_pred
+                        for corrections in range(cfg.max_correct + 1):
+                            accept_policy = (
+                                (~trusted_policy)
+                                & (prob_stack[corrections] >= threshold)
+                                & (margin_stack[corrections] >= policy["min_margin"])
+                                & (max_prob_stack[corrections] >= policy["min_prob"])
+                                & policy_agreement_stack[corrections]
+                            )
+                            chosen_policy_fb = torch.where(
+                                accept_policy,
+                                torch.full_like(chosen_policy_fb, corrections),
+                                chosen_policy_fb,
+                            )
+                            pred_policy_fb = torch.where(accept_policy, pred_stack[corrections], pred_policy_fb)
+                            trusted_policy = trusted_policy | accept_policy
+                        fb_policy_blocks = torch.where(
+                            trusted_policy,
+                            1.0 + chosen_policy_fb.float(),
+                            torch.full_like(chosen_policy.float(), float(cfg.loop_steps)),
+                        )
+                        policy_sweep[policy_name][suffix]["fallback_acc"] += (
+                            pred_policy_fb == target
+                        ).float().mean().item()
+                        policy_sweep[policy_name][suffix]["fallback_avg_correct_loops"] += (
+                            fb_policy_blocks - 1.0
+                        ).mean().item()
+                        policy_sweep[policy_name][suffix]["fallback_full_loop_rate"] += (
+                            ~trusted_policy
+                        ).float().mean().item()
 
                 for threshold, suffix in thresholds:
                     chosen = torch.full_like(target, cfg.max_correct)
@@ -782,6 +932,23 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
 
         for k in list(metrics):
             metrics[k] /= cfg.eval_batches
+        for policy_name in policy_sweep:
+            for suffix in policy_sweep[policy_name]:
+                policy_metrics = policy_sweep[policy_name][suffix]
+                for key in list(policy_metrics):
+                    policy_metrics[key] /= cfg.eval_batches
+                policy_metrics["adaptive_loop_equiv_blocks"] = (
+                    1.0 + policy_metrics["adaptive_avg_correct_loops"]
+                )
+                policy_metrics["adaptive_compute_savings_vs_full_pct"] = (
+                    1.0 - policy_metrics["adaptive_loop_equiv_blocks"] / cfg.loop_steps
+                ) * 100.0
+                policy_metrics["fallback_loop_equiv_blocks"] = (
+                    1.0 + policy_metrics["fallback_avg_correct_loops"]
+                )
+                policy_metrics["fallback_compute_savings_vs_full_pct"] = (
+                    1.0 - policy_metrics["fallback_loop_equiv_blocks"] / cfg.loop_steps
+                ) * 100.0
 
         by_hop = {}
         for hop in range(1, cfg.max_hops + 1):
@@ -817,17 +984,142 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 1.0 - metrics[f"fallback_{suffix}_loop_equiv_blocks"] / cfg.loop_steps
             ) * 100.0
         jumprec.train()
-        return {"overall": metrics, "by_hop": by_hop, "by_task": by_task}
+        return {"overall": metrics, "by_hop": by_hop, "by_task": by_task, "policy_sweep": policy_sweep}
 
     jump_eval = eval_jumprec()
     print(f"[jumprec eval] {json.dumps(jump_eval, indent=2)}")
+
+    direct_eval = None
+    n_direct_trainable = 0
+    direct_model = None
+    if cfg.run_direct_baseline:
+        direct_model = DirectControlModel(teacher).to(device)
+        n_direct_trainable = sum(p.numel() for p in direct_model.parameters() if p.requires_grad)
+        print(f"[direct mixed] trainable params={n_direct_trainable/1e6:.3f}M")
+        opt_d = torch.optim.AdamW([p for p in direct_model.parameters() if p.requires_grad], lr=cfg.lr_jump)
+        t2 = time.time()
+        print("[direct mixed] training")
+        for step in range(1, cfg.jump_steps + 1):
+            ids, target, _, _, _ = make_batch(cfg.batch_size, hop_limit=train_hop_limit)
+            with torch.no_grad():
+                state0 = teacher.encode(ids)
+            logits = direct_model.forward_from_state(state0.detach())
+            loss = F.cross_entropy(logits, target)
+            opt_d.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(direct_model.parameters(), 1.0)
+            opt_d.step()
+            if step % cfg.log_every == 0 or step == cfg.jump_steps:
+                print(
+                    f"  direct mixed step {step:5d}/{cfg.jump_steps} loss {loss.item():.4f} "
+                    f"elapsed {time.time()-t2:.1f}s",
+                    flush=True,
+                )
+
+        direct_model.eval()
+        acc = 0.0
+        by_hop_acc: Dict[str, List[float]] = {str(i): [] for i in range(1, cfg.max_hops + 1)}
+        by_task_acc: Dict[str, List[float]] = {name: [] for name in task_names}
+        with torch.no_grad():
+            for _ in range(cfg.eval_batches):
+                ids, target, _, hops, task_ids = make_batch(cfg.batch_size)
+                state0 = teacher.encode(ids)
+                logits = direct_model.forward_from_state(state0)
+                pred = logits.argmax(dim=-1)
+                acc += (pred == target).float().mean().item()
+                for k, v in grouped_accuracy(pred, target, hops).items():
+                    by_hop_acc[k].append(v)
+                for k, v in grouped_task_accuracy(pred, target, task_ids).items():
+                    by_task_acc[k].append(v)
+        direct_eval = {
+            "direct_acc": acc / cfg.eval_batches,
+            "direct_block_equiv": float(cfg.direct_blocks),
+            "direct_compute_savings_vs_full_pct": (1.0 - cfg.direct_blocks / cfg.loop_steps) * 100.0,
+            "direct_by_hop": {
+                k: (sum(v) / len(v) if v else None)
+                for k, v in by_hop_acc.items()
+            },
+            "direct_by_task": {
+                k: (sum(v) / len(v) if v else None)
+                for k, v in by_task_acc.items()
+            },
+        }
+        print(f"[direct mixed eval] {json.dumps(direct_eval, indent=2)}")
+
+    def benchmark_runtime(direct_for_timing=None) -> Dict[str, float]:
+        if cfg.timing_batches <= 0:
+            return {}
+        teacher.eval()
+        jumprec.eval()
+        if direct_for_timing is not None:
+            direct_for_timing.eval()
+
+        def sync() -> None:
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+
+        def time_batches(fn) -> float:
+            with torch.no_grad():
+                for _ in range(3):
+                    ids, _, _, _, _ = make_batch(cfg.batch_size)
+                    fn(ids)
+                sync()
+                start = time.perf_counter()
+                for _ in range(cfg.timing_batches):
+                    ids, _, _, _, _ = make_batch(cfg.batch_size)
+                    fn(ids)
+                sync()
+                elapsed = time.perf_counter() - start
+            return 1000.0 * elapsed / cfg.timing_batches
+
+        def teacher_full(ids):
+            state0 = teacher.encode(ids)
+            return teacher.classify(teacher.run_steps_from(state0, 0, cfg.loop_steps))
+
+        def jumprec_all(ids):
+            state0 = teacher.encode(ids)
+            return jumprec.forward_from_state(state0)
+
+        def jumprec_budget(ids, corrections: int):
+            state0 = teacher.encode(ids)
+            landing = jumprec.jump(state0, corrections)
+            final = teacher.run_steps_from(landing, cfg.loop_steps - corrections, corrections)
+            return teacher.classify(final)
+
+        timings = {
+            "batch_size": float(cfg.batch_size),
+            "timing_batches": float(cfg.timing_batches),
+            "teacher_full_ms_per_batch": time_batches(teacher_full),
+            "jumprec_all_budgets_ms_per_batch": time_batches(jumprec_all),
+            "jumprec_c0_ms_per_batch": time_batches(lambda ids: jumprec_budget(ids, 0)),
+            f"jumprec_c{cfg.max_correct}_ms_per_batch": time_batches(
+                lambda ids: jumprec_budget(ids, cfg.max_correct)
+            ),
+        }
+        if direct_for_timing is not None:
+            timings["direct_ms_per_batch"] = time_batches(
+                lambda ids: direct_for_timing.forward_from_state(teacher.encode(ids))
+            )
+        return timings
+
+    timing_eval = benchmark_runtime(direct_model)
+    if timing_eval:
+        print(f"[timing eval] {json.dumps(timing_eval, indent=2)}")
 
     summary = {
         "config": asdict(cfg),
         "teacher_params": n_teacher,
         "jumprec_trainable_params": n_jump_trainable,
+        "direct_trainable_params": n_direct_trainable,
         "teacher_eval": teacher_eval,
+        "teacher_gate": {
+            "passed": not quality_failures,
+            "failures": quality_failures,
+            "extra_steps_used": teacher_extra_used,
+        },
         "jumprec_eval": jump_eval,
+        "direct_eval": direct_eval,
+        "timing_eval": timing_eval,
     }
     return summary
 
@@ -868,6 +1160,7 @@ if __name__ == "__main__":
         choices=[
             "dry",
             "dry_mixed",
+            "dry_round",
             "smoke",
             "probe",
             "quick",
@@ -879,6 +1172,8 @@ if __name__ == "__main__":
             "quick_ood_hops",
             "quick_mix",
             "quick_mix_strict",
+            "quick_mix_direct3",
+            "quick_mix_round",
             "full",
         ],
     )
@@ -888,7 +1183,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.local:
         raise SystemExit("Use `modal run run_jumprec_v0.py --mode quick` for Modal, or add `--local`.")
-    if args.mode not in {"dry", "dry_mixed"} and not args.allow_slow_local:
+    if args.mode not in {"dry", "dry_mixed", "dry_round"} and not args.allow_slow_local:
         raise SystemExit("Local CPU guard: use --mode dry, or add --allow-slow-local if you really mean it.")
     cfg = config_for_mode(args.mode)
     if args.seed is not None:
