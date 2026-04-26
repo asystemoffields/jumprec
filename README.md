@@ -44,9 +44,15 @@ becomes favorable at batch size 1, which is closer to local interactive use.
 
 The batch-1 timing result is seed-confirmed and now the strongest local-target
 result. At threshold 0.90, agreement-free JumpRec reaches 98.29% mean accuracy
-while using 2.40 of 15 recurrent core layers, and runs in 8.81 ms versus 18.81
-ms for the full recurrent teacher. That is a 2.13x batch-1 speedup while also
-beating the full teacher and prior direct-control accuracies.
+while using 2.40 of 15 recurrent core layers. Two batch-1 timing passes both
+showed about a 2x speedup over the full recurrent teacher while also beating
+the full teacher and prior direct-control accuracies.
+
+A checkpointed batch-size sweep now shows the useful latency regime directly:
+the current serial-router implementation is faster through roughly batch size
+8, breaks even around batch size 16, and loses for larger throughput batches.
+That supports the local/small-batch target while cautioning against broad
+production-serving throughput claims without fused routing.
 
 The runner now supports checkpoint save/load and batch-size timing sweeps, so
 future timing and threshold probes do not need to retrain from scratch.
@@ -106,15 +112,13 @@ modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep_reuse
 
 ## Current Next Steps
 
-1. Make the batch-1 mixed/core3 result the current local-inference headline,
-   while keeping the synthetic-task caveat explicit.
-2. Add a timing sweep across batch sizes from a single run, so the crossover
-   between local latency and throughput batching is measured directly.
-3. Save/reload trained recurrent and JumpRec checkpoints to avoid retraining
-   for every timing or calibration probe.
-4. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
+1. Make the mixed/core3 small-batch result the current local-inference
+   headline, while keeping the synthetic-task caveat explicit.
+2. Verify Modal checkpoint reuse on at least one seed so timing or calibration
+   probes can be rerun without retraining.
+3. Improve the 8-node / 4-hop recurrent retrofit with hard-hop replay or a
    better balanced curriculum; core depth alone did not solve 4-hop cases.
-5. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
+4. Keep mixed/core3 as the default LM benchmark and keep the 3-layer direct
    control in every table.
-6. Seed-confirm any router or hard-case training improvement before making
+5. Seed-confirm any router or hard-case training improvement before making
    broader architecture claims.

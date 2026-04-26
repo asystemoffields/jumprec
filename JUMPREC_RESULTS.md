@@ -1254,3 +1254,55 @@ than a consumer local GPU. But it is exactly the first shape we wanted: a small
 pretrained-LM retrofit with a recurrent state space where a learned jump/router
 can spend much less compute on easier cases while preserving or improving hard
 task accuracy.
+
+## 2026-04-26 - checkpointed batch-size timing sweep
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep --seed 42
+modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep --seed 101
+modal run run_recurrent_smol.py --mode mixed_core3_router_bsize_sweep --seed 202
+```
+
+This reruns the mixed/core3 agreement-free router with checkpoint saving and
+a single-run timing sweep over batch sizes 1, 2, 4, 8, 16, 32, and 64. The
+checkpoints were saved to Modal volume paths like
+`/results/checkpoints/mixed_core3_router_seed42.pt`.
+
+Agreement-free router, threshold 0.90:
+
+| Seed | Teacher Full | Router Acc | Avg Core Layers | Savings | B1 Full | B1 Router | B1 Speedup | B64 Full | B64 Router | B64 Speedup |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 98.71% | 99.17% | 2.11 / 15 | 85.94% | 23.58 ms | 10.05 ms | 2.35x | 28.46 ms | 27.14 ms | 1.05x |
+| 101 | 98.49% | 98.58% | 2.25 / 15 | 85.01% | 20.57 ms | 8.22 ms | 2.50x | 28.32 ms | 36.25 ms | 0.78x |
+| 202 | 96.56% | 97.12% | 2.85 / 15 | 81.03% | 22.71 ms | 11.65 ms | 1.95x | 28.85 ms | 44.27 ms | 0.65x |
+| Mean | 97.92% | 98.29% | 2.40 / 15 | 84.00% | 22.29 ms | 9.97 ms | 2.24x | 28.54 ms | 35.89 ms | 0.80x |
+
+Mean batch-size sweep for threshold 0.90:
+
+| Batch Size | Full Teacher | Router Serial | Speedup |
+|---:|---:|---:|---:|
+| 1 | 22.29 ms | 9.97 ms | 2.24x |
+| 2 | 22.89 ms | 12.76 ms | 1.79x |
+| 4 | 23.32 ms | 16.63 ms | 1.40x |
+| 8 | 23.65 ms | 19.56 ms | 1.21x |
+| 16 | 24.33 ms | 24.21 ms | 1.00x |
+| 32 | 24.76 ms | 29.59 ms | 0.84x |
+| 64 | 28.54 ms | 35.89 ms | 0.80x |
+
+Interpretation:
+
+The timing sweep confirms the previous batch-1 result and draws the line more
+clearly. In the current unfused serial-router implementation, JumpRec is a
+local/small-batch latency win through roughly batch size 8, breaks even around
+batch size 16, and loses for larger throughput batches. This is consistent with
+the implementation: dynamic subset routing creates multiple small GPU launches,
+so counted layer savings convert to wall-clock speed only when per-request
+latency matters more than large-batch utilization.
+
+This is still encouraging for the intended local-model direction. The measured
+regime is exactly where a single-user local assistant, agent, or interactive
+tool would usually live. But it also means we should not claim a generic
+production-serving throughput improvement without a fused/static routing
+implementation.
