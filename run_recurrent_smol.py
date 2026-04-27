@@ -77,6 +77,7 @@ class Config:
     load_checkpoints: bool = False
     checkpoint_tag: str = ""
     load_checkpoint_tag: str = ""
+    load_jumprec_state: bool = True
     resume_teacher_training: bool = False
     teacher_val_every: int = 0
     teacher_val_batches: int = 0
@@ -95,6 +96,7 @@ class Config:
     max_correct: int = 3
     jump_layers: int = 1
     jump_lr: float = 4e-4
+    distill_loss_weight: float = 0.2
     verifier_loss_weight: float = 0.2
     use_temp_adapter: bool = True
     strict_need_agreement: bool = True
@@ -837,6 +839,40 @@ def config_for_mode(mode: str) -> Config:
         cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
         cfg.eval_batches = 96
         cfg.log_every = 500
+    elif mode in (
+        "core3_8n4h_strathop_ablate_no_adapter",
+        "core3_8n4h_strathop_ablate_no_distill",
+        "core3_8n4h_strathop_ablate_no_verifier",
+    ):
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 0
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.load_jumprec_state = False
+        cfg.load_checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = f"{mode}_seed{{seed}}"
+        cfg.timing_batches = 16
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+        if mode == "core3_8n4h_strathop_ablate_no_adapter":
+            cfg.use_temp_adapter = False
+        elif mode == "core3_8n4h_strathop_ablate_no_distill":
+            cfg.distill_loss_weight = 0.0
+        elif mode == "core3_8n4h_strathop_ablate_no_verifier":
+            cfg.verifier_loss_weight = 0.0
     elif mode == "retrofit_8n4h_unfreeze":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -1600,10 +1636,15 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     jump_summary = None
     jumprec_prompt_audit_summary = None
     direct_summary = None
+    has_loaded_jumprec = (
+        cfg.load_jumprec_state
+        and loaded_checkpoint is not None
+        and loaded_checkpoint.get("jumprec_state") is not None
+    )
     should_use_jumprec = cfg.jump_steps > 0 or (
         loaded_checkpoint is not None
         and not cfg.resume_teacher_training
-        and loaded_checkpoint.get("jumprec_state") is not None
+        and has_loaded_jumprec
     )
     if should_use_jumprec:
         for p in model.parameters():
@@ -1755,7 +1796,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
 
         jumprec = JumpRec(model).to(device)
         print(f"[jumprec] trainable params={sum(p.numel() for p in jumprec.parameters() if p.requires_grad)/1e6:.3f}M")
-        if loaded_checkpoint is not None and loaded_checkpoint.get("jumprec_state") is not None:
+        if has_loaded_jumprec:
             jumprec.load_state_dict(loaded_checkpoint["jumprec_state"])
             print("[checkpoint] loaded JumpRec", flush=True)
         else:
@@ -1781,7 +1822,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     verifier_losses.append(weighted_bce_with_logits(out["verify"][corrections], good, hops))
                 loss = (
                     torch.stack(ce_losses).mean()
-                    + 0.2 * torch.stack(distill_losses).mean()
+                    + cfg.distill_loss_weight * torch.stack(distill_losses).mean()
                     + cfg.verifier_loss_weight * torch.stack(verifier_losses).mean()
                 )
                 opt_j.zero_grad()
@@ -2608,6 +2649,9 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_gate_jumprec",
             "core3_8n4h_strathop_polish_jumprec",
             "core3_8n4h_strathop_polish2_jumprec",
+            "core3_8n4h_strathop_ablate_no_adapter",
+            "core3_8n4h_strathop_ablate_no_distill",
+            "core3_8n4h_strathop_ablate_no_verifier",
             "retrofit_8n4h_unfreeze",
             "retrofit_12n6h",
             "retrofit_unfreeze",
