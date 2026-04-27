@@ -2283,3 +2283,53 @@ The seed-42 no-agreement router is still visibly weaker than agreement routing
 on normal/relabel prompts, which matches the held-out verifier audit. The
 promotable policy remains agreement routing; no-agreement remains a speed
 diagnostic.
+
+## 2026-04-26 - seed-101 JumpRec component ablations
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_adapter --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_distill --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_verifier --seed 101
+```
+
+Commit `762c7cb` adds these modes. Each ablation loads the same seed-101
+stratified teacher checkpoint but forces fresh JumpRec training instead of
+reusing saved JumpRec weights.
+
+| Mode | Temp Adapter | Distill Loss | Verifier Loss | Teacher | c0 | c1 | c2 | c3 | Agree 0.90 | Avg Core Layers | Savings | No-Agree 0.90 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Baseline | yes | 0.2 | 0.2 | 99.79% | 68.67% | 97.64% | 99.74% | 99.77% | 99.77% | 2.40 / 18 | 86.66% | 99.43% |
+| No adapter | no | 0.2 | 0.2 | 99.79% | 71.39% | 97.40% | 99.71% | 99.79% | 99.80% | 2.34 / 18 | 86.98% | 99.41% |
+| No distill | yes | 0.0 | 0.2 | 99.79% | 69.29% | 97.48% | 99.69% | 99.72% | 99.79% | 2.41 / 18 | 86.63% | 99.24% |
+| No verifier | yes | 0.2 | 0.0 | 99.79% | 69.50% | 96.81% | 99.76% | 99.71% | 99.58% | 18.00 / 18 | 0.00% | 99.58% |
+
+Timing:
+
+| Mode | Full Teacher | Serial No-Agree 0.90 | Serial Agreement 0.80 |
+|---|---:|---:|---:|
+| Baseline | 33.55 ms | 21.56 ms | 41.24 ms |
+| No adapter | 34.57 ms | 24.05 ms | 45.28 ms |
+| No distill | 34.94 ms | 27.68 ms | 58.40 ms |
+| No verifier | 34.70 ms | 52.05 ms | 76.09 ms |
+
+Interpretation:
+
+On this seed-101 8-node/4-hop SmolLM hardcase, the verifier loss is the
+essential ablation for adaptive savings. Without verifier supervision, the
+fixed JumpRec budgets still learn the task, but the learned verifier never
+routes confidently, so the deployable policies fall back to the full loop and
+save no counted core layers.
+
+The temporary adapter and distillation loss are not essential on this specific
+setup: removing either one preserves fixed-budget accuracy and agreement-router
+quality. This should be interpreted narrowly. Earlier 12-node/6-hop toy-runner
+results showed the adapter mattered a lot under a harder max-hop edge and a
+smaller correction budget. The current result says the adapter/distillation
+benefits are task-regime dependent, not that they are useless.
+
+For the paper-facing claim, this is useful: JumpRec is not just a pile of
+ingredients where every piece must work by faith. The core jump-plus-tail
+mechanism learns well even under removals, while verifier supervision is
+clearly required for the adaptive compute-saving behavior.
