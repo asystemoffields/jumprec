@@ -103,6 +103,9 @@ class Config:
     direct_layers: int = 3
     direct_lr: float = 4e-4
     audit_prompt_variants: str = ""
+    router_val_batches: int = 0
+    router_val_max_drop: float = 0.0025
+    router_threshold_candidates: str = "0.50,0.60,0.70,0.80,0.85,0.90,0.95,0.97,0.99"
 
     @property
     def loop_steps(self) -> int:
@@ -124,6 +127,7 @@ def config_for_mode(mode: str) -> Config:
         "dry_strathop_polish2_eval",
         "dry_strathop_audit",
         "dry_strathop_polish2_audit",
+        "dry_strathop_polish2_verifier_audit",
     ):
         cfg.use_fake_model = True
         cfg.d_model = 64
@@ -277,6 +281,21 @@ def config_for_mode(mode: str) -> Config:
             cfg.load_checkpoints = True
             cfg.checkpoint_tag = "dry_strathop_polish2_seed{seed}"
             cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop_polish2_verifier_audit":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 0
+            cfg.jump_steps = 4
+            cfg.direct_steps = 0
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 8.0
+            cfg.load_checkpoints = True
+            cfg.checkpoint_tag = "dry_strathop_polish2_seed{seed}"
+            cfg.router_val_batches = 1
             cfg.timing_batch_sizes = "1,2"
         elif mode == "dry_sweep":
             cfg.timing_batch_sizes = "1,2,4"
@@ -679,6 +698,50 @@ def config_for_mode(mode: str) -> Config:
         cfg.checkpoint_tag = "core3_8n4h_strathop_polish2_seed{seed}"
         cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
         cfg.eval_batches = 128
+        cfg.timing_batches = 8
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_verifier_audit":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
+        cfg.eval_batches = 128
+        cfg.router_val_batches = 64
+        cfg.timing_batches = 8
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_polish2_verifier_audit":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 8.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_polish2_seed{seed}"
+        cfg.eval_batches = 128
+        cfg.router_val_batches = 64
         cfg.timing_batches = 8
         cfg.log_every = 500
     elif mode == "core3_8n4h_strathop_jumprec":
@@ -1736,9 +1799,252 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             jumprec.eval()
             thresholds = [(0.80, "080"), (0.90, "090"), (0.95, "095")]
             router_policies = [("no_agree", False), ("agree", True)]
+            full_core_layers = float(cfg.loop_steps * cfg.core_layers)
             metrics = {f"jump_c{c}_acc": 0.0 for c in range(cfg.max_correct + 1)}
             strict_080_by_hop = {str(i): [] for i in range(1, cfg.max_hops + 1)}
             strict_080_by_task = {name: [] for name in task_names}
+            oracle = {
+                "acc": 0.0,
+                "avg_core_layers": 0.0,
+                "full_loop_rate": 0.0,
+                "any_jump_correct_rate": 0.0,
+            }
+
+            def threshold_key(threshold: float) -> str:
+                return f"{threshold:.3f}".rstrip("0").rstrip(".")
+
+            def calibration_bucket():
+                return {
+                    "count": 0,
+                    "conf_sum": 0.0,
+                    "correct_sum": 0.0,
+                    "brier_sum": 0.0,
+                    "bins": [
+                        {"count": 0, "conf_sum": 0.0, "correct_sum": 0.0}
+                        for _ in range(10)
+                    ],
+                }
+
+            calibration = {
+                "all": calibration_bucket(),
+                "by_budget": {str(c): calibration_bucket() for c in range(cfg.max_correct + 1)},
+            }
+
+            def update_calibration(bucket, probs, correct):
+                probs_f = probs.detach().float().flatten()
+                correct_f = correct.detach().float().flatten()
+                n = int(probs_f.numel())
+                if n == 0:
+                    return
+                bucket["count"] += n
+                bucket["conf_sum"] += probs_f.sum().item()
+                bucket["correct_sum"] += correct_f.sum().item()
+                bucket["brier_sum"] += ((probs_f - correct_f) ** 2).sum().item()
+                bin_ids = torch.clamp((probs_f * 10).long(), max=9)
+                for bin_id in range(10):
+                    mask = bin_ids == bin_id
+                    if mask.any():
+                        bin_count = int(mask.sum().item())
+                        bucket["bins"][bin_id]["count"] += bin_count
+                        bucket["bins"][bin_id]["conf_sum"] += probs_f[mask].sum().item()
+                        bucket["bins"][bin_id]["correct_sum"] += correct_f[mask].sum().item()
+
+            def finish_calibration(bucket):
+                n = bucket["count"]
+                if n == 0:
+                    return None
+                ece = 0.0
+                bins = []
+                for bin_id, bin_bucket in enumerate(bucket["bins"]):
+                    bin_count = bin_bucket["count"]
+                    if bin_count:
+                        mean_conf = bin_bucket["conf_sum"] / bin_count
+                        empirical_acc = bin_bucket["correct_sum"] / bin_count
+                        ece += (bin_count / n) * abs(mean_conf - empirical_acc)
+                    else:
+                        mean_conf = None
+                        empirical_acc = None
+                    bins.append(
+                        {
+                            "lo": bin_id / 10.0,
+                            "hi": (bin_id + 1) / 10.0,
+                            "count": bin_count,
+                            "mean_conf": mean_conf,
+                            "empirical_acc": empirical_acc,
+                        }
+                    )
+                return {
+                    "count": n,
+                    "mean_conf": bucket["conf_sum"] / n,
+                    "empirical_acc": bucket["correct_sum"] / n,
+                    "brier": bucket["brier_sum"] / n,
+                    "ece_10": ece,
+                    "bins": bins,
+                }
+
+            def route_predictions(
+                pred_stack,
+                verify_stack,
+                margin_stack,
+                max_prob_stack,
+                agree_stack,
+                full_pred,
+                target,
+                threshold: float,
+                need_agreement: bool,
+            ):
+                trusted = torch.zeros_like(target, dtype=torch.bool)
+                chosen = torch.full_like(target, cfg.loop_steps)
+                routed_pred = full_pred
+                for c in range(cfg.max_correct + 1):
+                    agree_ok = agree_stack[c] if need_agreement else torch.ones_like(trusted)
+                    accept = (
+                        (~trusted)
+                        & (verify_stack[c] >= threshold)
+                        & (margin_stack[c] >= 0.05)
+                        & (max_prob_stack[c] >= 0.45)
+                        & agree_ok
+                    )
+                    chosen = torch.where(accept, torch.full_like(chosen, c), chosen)
+                    routed_pred = torch.where(accept, pred_stack[c], routed_pred)
+                    trusted = trusted | accept
+                core_layers = torch.where(
+                    trusted,
+                    torch.full_like(chosen.float(), float(cfg.jump_layers))
+                    + chosen.float() * float(cfg.core_layers),
+                    torch.full_like(chosen.float(), full_core_layers),
+                )
+                return routed_pred, trusted, chosen, core_layers
+
+            def collect_router_grid(num_batches: int, threshold_values: List[float]):
+                threshold_values = sorted(set(float(t) for t in threshold_values))
+                out = {
+                    "batches": num_batches,
+                    "full_teacher_acc": 0.0,
+                    "policies": {
+                        policy_name: {
+                            threshold_key(threshold): {
+                                "threshold": threshold,
+                                "acc": 0.0,
+                                "full_loop_rate": 0.0,
+                                "coverage": 0.0,
+                                "avg_tail_loops": 0.0,
+                                "avg_core_layers": 0.0,
+                                "core_savings_vs_full_pct": 0.0,
+                                "accepted_count": 0,
+                                "accepted_precision": None,
+                            }
+                            for threshold in threshold_values
+                        }
+                        for policy_name, _ in router_policies
+                    },
+                }
+                accepted_correct = {
+                    policy_name: {threshold_key(threshold): 0.0 for threshold in threshold_values}
+                    for policy_name, _ in router_policies
+                }
+                accepted_count = {
+                    policy_name: {threshold_key(threshold): 0 for threshold in threshold_values}
+                    for policy_name, _ in router_policies
+                }
+                with torch.no_grad():
+                    for _ in range(num_batches):
+                        input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(
+                            cfg.batch_size,
+                            hard_hop_sampling=False,
+                        )
+                        state0, layer_mask, position_ids, position_embeddings, _, teacher_logits = teacher_collect(
+                            input_ids,
+                            attention_mask,
+                            lengths,
+                        )
+                        full_pred = teacher_logits.argmax(dim=-1)
+                        out["full_teacher_acc"] += (full_pred == target).float().mean().item()
+                        jump_out = jumprec.forward_encoded(
+                            state0,
+                            layer_mask,
+                            position_ids,
+                            position_embeddings,
+                            lengths,
+                        )
+                        pred_stack = torch.stack(
+                            [logits_i.argmax(dim=-1) for logits_i in jump_out["logits"]],
+                            dim=0,
+                        )
+                        verify_stack = torch.stack([torch.sigmoid(v) for v in jump_out["verify"]], dim=0)
+                        logits_stack = torch.stack(jump_out["logits"], dim=0)
+                        probs = F.softmax(logits_stack, dim=-1)
+                        top2 = probs.topk(2, dim=-1).values
+                        margin_stack = top2[:, :, 0] - top2[:, :, 1]
+                        max_prob_stack = top2[:, :, 0]
+                        agree_stack = torch.ones_like(verify_stack, dtype=torch.bool)
+                        agree_stack[:-1] = pred_stack[:-1] == pred_stack[1:]
+                        agree_stack[-1] = False
+                        for threshold in threshold_values:
+                            key = threshold_key(threshold)
+                            for policy_name, need_agreement in router_policies:
+                                routed_pred, trusted, chosen, core_layers = route_predictions(
+                                    pred_stack,
+                                    verify_stack,
+                                    margin_stack,
+                                    max_prob_stack,
+                                    agree_stack,
+                                    full_pred,
+                                    target,
+                                    threshold,
+                                    need_agreement,
+                                )
+                                item = out["policies"][policy_name][key]
+                                item["acc"] += (routed_pred == target).float().mean().item()
+                                item["full_loop_rate"] += (~trusted).float().mean().item()
+                                item["coverage"] += trusted.float().mean().item()
+                                item["avg_tail_loops"] += torch.where(
+                                    trusted,
+                                    chosen.float(),
+                                    torch.full_like(chosen.float(), float(cfg.loop_steps)),
+                                ).mean().item()
+                                item["avg_core_layers"] += core_layers.mean().item()
+                                accepted_count[policy_name][key] += int(trusted.sum().item())
+                                if trusted.any():
+                                    accepted_correct[policy_name][key] += (
+                                        routed_pred[trusted] == target[trusted]
+                                    ).float().sum().item()
+                out["full_teacher_acc"] /= num_batches
+                for policy_name, _ in router_policies:
+                    for key, item in out["policies"][policy_name].items():
+                        item["acc"] /= num_batches
+                        item["full_loop_rate"] /= num_batches
+                        item["coverage"] /= num_batches
+                        item["avg_tail_loops"] /= num_batches
+                        item["avg_core_layers"] /= num_batches
+                        item["core_savings_vs_full_pct"] = (
+                            1.0 - item["avg_core_layers"] / full_core_layers
+                        ) * 100.0
+                        item["accepted_count"] = accepted_count[policy_name][key]
+                        if accepted_count[policy_name][key] > 0:
+                            item["accepted_precision"] = (
+                                accepted_correct[policy_name][key] / accepted_count[policy_name][key]
+                            )
+                return out
+
+            def choose_heldout_threshold(val_grid, policy_name: str):
+                floor = val_grid["full_teacher_acc"] - cfg.router_val_max_drop
+                candidates = list(val_grid["policies"][policy_name].items())
+                acceptable = [(key, item) for key, item in candidates if item["acc"] >= floor]
+                if acceptable:
+                    key, item = min(
+                        acceptable,
+                        key=lambda pair: (pair[1]["avg_core_layers"], -pair[1]["acc"]),
+                    )
+                    reason = "within_val_drop"
+                else:
+                    key, item = max(
+                        candidates,
+                        key=lambda pair: (pair[1]["acc"], -pair[1]["avg_core_layers"]),
+                    )
+                    reason = "best_val_accuracy"
+                return key, item, reason, floor
+
             for _, suffix in thresholds:
                 metrics[f"strict_{suffix}_fallback_acc"] = 0.0
                 metrics[f"strict_{suffix}_fallback_full_loop_rate"] = 0.0
@@ -1776,27 +2082,37 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     agree_stack[-1] = False
                     for c, pred in enumerate(preds):
                         metrics[f"jump_c{c}_acc"] += (pred == target).float().mean().item()
+                        good = (pred == target).float()
+                        update_calibration(calibration["by_budget"][str(c)], verify_stack[c], good)
+                        update_calibration(calibration["all"], verify_stack[c], good)
+                    correct_stack = pred_stack == target.unsqueeze(0)
+                    any_jump_correct = correct_stack.any(dim=0)
+                    first_correct = correct_stack.float().argmax(dim=0)
+                    pred_oracle = full_pred
+                    for c in range(cfg.max_correct + 1):
+                        use_budget = any_jump_correct & (first_correct == c)
+                        pred_oracle = torch.where(use_budget, pred_stack[c], pred_oracle)
+                    oracle_core_layers = torch.where(
+                        any_jump_correct,
+                        torch.full_like(first_correct.float(), float(cfg.jump_layers))
+                        + first_correct.float() * float(cfg.core_layers),
+                        torch.full_like(first_correct.float(), full_core_layers),
+                    )
+                    oracle["acc"] += (pred_oracle == target).float().mean().item()
+                    oracle["avg_core_layers"] += oracle_core_layers.mean().item()
+                    oracle["full_loop_rate"] += (~any_jump_correct).float().mean().item()
+                    oracle["any_jump_correct_rate"] += any_jump_correct.float().mean().item()
                     for threshold, suffix in thresholds:
-                        trusted = torch.zeros_like(target, dtype=torch.bool)
-                        chosen = torch.full_like(target, cfg.loop_steps)
-                        pred_fb = full_pred
-                        for c in range(cfg.max_correct + 1):
-                            agree_ok = agree_stack[c] if cfg.strict_need_agreement else torch.ones_like(trusted)
-                            accept = (
-                                (~trusted)
-                                & (verify_stack[c] >= threshold)
-                                & (margin_stack[c] >= 0.05)
-                                & (max_prob_stack[c] >= 0.45)
-                                & agree_ok
-                            )
-                            chosen = torch.where(accept, torch.full_like(chosen, c), chosen)
-                            pred_fb = torch.where(accept, pred_stack[c], pred_fb)
-                            trusted = trusted | accept
-                        core_layers = torch.where(
-                            trusted,
-                            torch.full_like(chosen.float(), float(cfg.jump_layers))
-                            + chosen.float() * float(cfg.core_layers),
-                            torch.full_like(chosen.float(), float(cfg.loop_steps * cfg.core_layers)),
+                        pred_fb, trusted, chosen, core_layers = route_predictions(
+                            pred_stack,
+                            verify_stack,
+                            margin_stack,
+                            max_prob_stack,
+                            agree_stack,
+                            full_pred,
+                            target,
+                            threshold,
+                            cfg.strict_need_agreement,
                         )
                         metrics[f"strict_{suffix}_fallback_acc"] += (pred_fb == target).float().mean().item()
                         metrics[f"strict_{suffix}_fallback_full_loop_rate"] += (~trusted).float().mean().item()
@@ -1807,29 +2123,16 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         ).mean().item()
                         metrics[f"strict_{suffix}_fallback_avg_core_layers"] += core_layers.mean().item()
                         for policy_name, need_agreement in router_policies:
-                            trusted_router = torch.zeros_like(target, dtype=torch.bool)
-                            chosen_router = torch.full_like(target, cfg.loop_steps)
-                            pred_router = full_pred
-                            for c in range(cfg.max_correct + 1):
-                                agree_ok = agree_stack[c] if need_agreement else torch.ones_like(trusted_router)
-                                accept = (
-                                    (~trusted_router)
-                                    & (verify_stack[c] >= threshold)
-                                    & (margin_stack[c] >= 0.05)
-                                    & (max_prob_stack[c] >= 0.45)
-                                    & agree_ok
-                                )
-                                chosen_router = torch.where(accept, torch.full_like(chosen_router, c), chosen_router)
-                                pred_router = torch.where(accept, pred_stack[c], pred_router)
-                                trusted_router = trusted_router | accept
-                            router_core_layers = torch.where(
-                                trusted_router,
-                                torch.full_like(chosen_router.float(), float(cfg.jump_layers))
-                                + chosen_router.float() * float(cfg.core_layers),
-                                torch.full_like(
-                                    chosen_router.float(),
-                                    float(cfg.loop_steps * cfg.core_layers),
-                                ),
+                            pred_router, trusted_router, chosen_router, router_core_layers = route_predictions(
+                                pred_stack,
+                                verify_stack,
+                                margin_stack,
+                                max_prob_stack,
+                                agree_stack,
+                                full_pred,
+                                target,
+                                threshold,
+                                need_agreement,
                             )
                             prefix = f"router_{suffix}_{policy_name}"
                             metrics[f"{prefix}_acc"] += (pred_router == target).float().mean().item()
@@ -1855,7 +2158,6 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     )
             for k in list(metrics):
                 metrics[k] /= cfg.eval_batches
-            full_core_layers = float(cfg.loop_steps * cfg.core_layers)
             metrics["full_core_layers"] = full_core_layers
             for _, suffix in thresholds:
                 metrics[f"strict_{suffix}_fallback_core_savings_vs_full_pct"] = (
@@ -1872,6 +2174,48 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             metrics["strict_080_by_task"] = {
                 k: (sum(v) / len(v) if v else None) for k, v in strict_080_by_task.items()
             }
+            for key in list(oracle):
+                oracle[key] /= cfg.eval_batches
+            oracle["core_savings_vs_full_pct"] = (
+                1.0 - oracle["avg_core_layers"] / full_core_layers
+            ) * 100.0
+            metrics["oracle_router"] = oracle
+            metrics["verifier_calibration"] = {
+                "all": finish_calibration(calibration["all"]),
+                "by_budget": {
+                    key: finish_calibration(bucket)
+                    for key, bucket in calibration["by_budget"].items()
+                },
+            }
+            if cfg.router_val_batches > 0:
+                candidates = parse_float_list(cfg.router_threshold_candidates)
+                if not candidates:
+                    candidates = [threshold for threshold, _ in thresholds]
+                val_grid = collect_router_grid(cfg.router_val_batches, candidates)
+                selected = {}
+                selected_thresholds = []
+                for policy_name, _ in router_policies:
+                    key, val_item, reason, floor = choose_heldout_threshold(val_grid, policy_name)
+                    selected[policy_name] = {
+                        "threshold": val_item["threshold"],
+                        "threshold_key": key,
+                        "selection_reason": reason,
+                        "val_accuracy_floor": floor,
+                        "val": val_item,
+                    }
+                    selected_thresholds.append(val_item["threshold"])
+                final_grid = collect_router_grid(cfg.eval_batches, selected_thresholds)
+                for policy_name, item in selected.items():
+                    item["final"] = final_grid["policies"][policy_name][item["threshold_key"]]
+                metrics["heldout_threshold_audit"] = {
+                    "threshold_candidates": candidates,
+                    "val_batches": cfg.router_val_batches,
+                    "final_batches": cfg.eval_batches,
+                    "max_val_drop_vs_teacher": cfg.router_val_max_drop,
+                    "val_full_teacher_acc": val_grid["full_teacher_acc"],
+                    "final_full_teacher_acc": final_grid["full_teacher_acc"],
+                    "selected": selected,
+                }
             jumprec.train()
             return metrics
 
@@ -2209,6 +2553,7 @@ if __name__ == "__main__":
             "dry_strathop_polish2_eval",
             "dry_strathop_audit",
             "dry_strathop_polish2_audit",
+            "dry_strathop_polish2_verifier_audit",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -2241,6 +2586,8 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_polish2_eval_teacher",
             "core3_8n4h_strathop_audit_teacher",
             "core3_8n4h_strathop_polish2_audit_teacher",
+            "core3_8n4h_strathop_verifier_audit",
+            "core3_8n4h_strathop_polish2_verifier_audit",
             "core3_8n4h_strathop_jumprec",
             "core3_8n4h_strathop_gate_jumprec",
             "core3_8n4h_strathop_polish_jumprec",
@@ -2267,6 +2614,7 @@ if __name__ == "__main__":
         "dry_strathop_polish2_eval",
         "dry_strathop_audit",
         "dry_strathop_polish2_audit",
+        "dry_strathop_polish2_verifier_audit",
         "dry_sweep",
         "dry_sweep_reuse",
     ):
