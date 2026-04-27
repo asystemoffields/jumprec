@@ -2239,3 +2239,47 @@ claim substantially harder to dismiss: the teacher is robust, prompt shortcuts
 are checked, verifier thresholds are held out, verifier calibration is measured,
 and the best deployable policy remains dramatically cheaper in counted core
 layers.
+
+## 2026-04-26 - JumpRec prompt artifact audit
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_audit_teacher --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_audit_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_audit_teacher --seed 202
+```
+
+Commit `c6ad7fe` extends the prompt artifact audit to the loaded JumpRec path.
+This uses the same prompt variants as the teacher audit and reports the
+deployable agreement router at threshold 0.90. The teacher column is included
+as a sanity reference from the same run.
+
+| Seed | Variant | Teacher Full Acc | JumpRec Agree 0.90 | Avg Core Layers | JumpRec No-Agree 0.90 | Fixed c3 |
+|---:|---|---:|---:|---:|---:|---:|
+| 42 | normal | 99.61% | 99.28% | 3.38 / 18 | 98.18% | 99.33% |
+| 42 | relabel | 99.50% | 99.49% | 3.37 / 18 | 98.57% | 99.39% |
+| 42 | map_scramble | 14.50% | 14.55% | 3.37 / 18 | 14.56% | 14.51% |
+| 42 | hop_random | 18.85% | 18.93% | 3.29 / 18 | 19.12% | 18.90% |
+| 101 | normal | 99.62% | 99.74% | 2.43 / 18 | 99.41% | 99.72% |
+| 101 | relabel | 99.77% | 99.80% | 2.41 / 18 | 99.35% | 99.69% |
+| 101 | map_scramble | 15.15% | 14.40% | 2.44 / 18 | 14.47% | 14.40% |
+| 101 | hop_random | 18.69% | 19.49% | 2.41 / 18 | 19.49% | 19.49% |
+| 202 | normal | 99.60% | 99.74% | 3.41 / 18 | 99.41% | 99.74% |
+| 202 | relabel | 99.49% | 99.83% | 3.39 / 18 | 99.38% | 99.71% |
+| 202 | map_scramble | 15.14% | 15.93% | 3.36 / 18 | 15.98% | 15.95% |
+| 202 | hop_random | 19.21% | 18.66% | 3.46 / 18 | 18.66% | 18.69% |
+
+Interpretation:
+
+The deployable JumpRec path passes the prompt artifact audit. Consistent symbol
+relabeling preserves routed JumpRec performance, while scrambling the displayed
+map or lying about the hop count collapses both fixed-budget and routed JumpRec
+near chance. That makes the information-gate story stronger than the
+teacher-only audit: the shortcut checks now cover the accelerated path we would
+actually claim.
+
+The seed-42 no-agreement router is still visibly weaker than agreement routing
+on normal/relabel prompts, which matches the held-out verifier audit. The
+promotable policy remains agreement routing; no-agreement remains a speed
+diagnostic.
