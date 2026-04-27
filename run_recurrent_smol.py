@@ -76,6 +76,8 @@ class Config:
     save_checkpoints: bool = False
     load_checkpoints: bool = False
     checkpoint_tag: str = ""
+    load_checkpoint_tag: str = ""
+    resume_teacher_training: bool = False
     teacher_val_every: int = 0
     teacher_val_batches: int = 0
     teacher_gate_min_full: float = 0.0
@@ -108,7 +110,15 @@ class Config:
 
 def config_for_mode(mode: str) -> Config:
     cfg = Config(mode=mode)
-    if mode in ("dry", "dry_sweep", "dry_sweep_reuse", "dry_hardhop", "dry_strathop", "dry_strathop_gate"):
+    if mode in (
+        "dry",
+        "dry_sweep",
+        "dry_sweep_reuse",
+        "dry_hardhop",
+        "dry_strathop",
+        "dry_strathop_gate",
+        "dry_strathop_polish",
+    ):
         cfg.use_fake_model = True
         cfg.d_model = 64
         cfg.n_heads = 4
@@ -159,6 +169,27 @@ def config_for_mode(mode: str) -> Config:
             cfg.teacher_gate_min_worst_hop = 0.25
             cfg.save_checkpoints = True
             cfg.checkpoint_tag = "dry_strathop_gate_seed{seed}"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop_polish":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 4
+            cfg.jump_steps = 0
+            cfg.direct_steps = 0
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 4.0
+            cfg.teacher_val_every = 2
+            cfg.teacher_val_batches = 1
+            cfg.teacher_gate_min_full = 0.5
+            cfg.teacher_gate_min_worst_hop = 0.25
+            cfg.load_checkpoints = True
+            cfg.resume_teacher_training = True
+            cfg.load_checkpoint_tag = "dry_strathop_gate_seed{seed}"
+            cfg.save_checkpoints = True
+            cfg.checkpoint_tag = "dry_strathop_polish_seed{seed}"
             cfg.timing_batch_sizes = "1,2"
         elif mode == "dry_sweep":
             cfg.timing_batch_sizes = "1,2,4"
@@ -433,6 +464,31 @@ def config_for_mode(mode: str) -> Config:
         cfg.teacher_gate_min_worst_hop = 0.98
         cfg.eval_batches = 96
         cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_polish_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 3000
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.resume_teacher_training = True
+        cfg.load_checkpoint_tag = "core3_8n4h_strathop_gate_seed{seed}"
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_polish_seed{seed}"
+        cfg.teacher_val_every = 250
+        cfg.teacher_val_batches = 16
+        cfg.teacher_gate_min_full = 0.995
+        cfg.teacher_gate_min_worst_hop = 0.98
+        cfg.eval_batches = 96
+        cfg.log_every = 250
     elif mode == "core3_8n4h_strathop_jumprec":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -475,6 +531,29 @@ def config_for_mode(mode: str) -> Config:
         cfg.load_checkpoints = True
         cfg.save_checkpoints = True
         cfg.checkpoint_tag = "core3_8n4h_strathop_gate_seed{seed}"
+        cfg.timing_batches = 64
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_polish_jumprec":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 4500
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_polish_seed{seed}"
         cfg.timing_batches = 64
         cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
         cfg.eval_batches = 96
@@ -542,8 +621,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     print(f"[config] {json.dumps(asdict(cfg), indent=2)}")
 
     checkpoint_tag = (cfg.checkpoint_tag or f"{cfg.mode}_seed{{seed}}").format(seed=cfg.seed, mode=cfg.mode)
+    load_checkpoint_tag = (cfg.load_checkpoint_tag or cfg.checkpoint_tag or f"{cfg.mode}_seed{{seed}}").format(
+        seed=cfg.seed,
+        mode=cfg.mode,
+    )
     checkpoint_root = "/results/checkpoints" if os.path.isdir("/results") else "checkpoints"
     checkpoint_path = os.path.join(checkpoint_root, f"{checkpoint_tag}.pt")
+    load_checkpoint_path = os.path.join(checkpoint_root, f"{load_checkpoint_tag}.pt")
 
     def save_checkpoint(model_obj, jumprec_obj=None, extra=None):
         if not cfg.save_checkpoints:
@@ -943,11 +1027,11 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     opt = torch.optim.AdamW(optim_groups)
     loaded_checkpoint = None
     if cfg.load_checkpoints:
-        if not os.path.exists(checkpoint_path):
-            raise FileNotFoundError(f"checkpoint not found: {checkpoint_path}")
-        loaded_checkpoint = torch.load(checkpoint_path, map_location=device)
+        if not os.path.exists(load_checkpoint_path):
+            raise FileNotFoundError(f"checkpoint not found: {load_checkpoint_path}")
+        loaded_checkpoint = torch.load(load_checkpoint_path, map_location=device)
         model.load_state_dict(loaded_checkpoint["model_state"])
-        print(f"[checkpoint] loaded teacher {checkpoint_path}", flush=True)
+        print(f"[checkpoint] loaded teacher {load_checkpoint_path}", flush=True)
 
     def active_hops_for_step(step: int, total_steps: int) -> int | None:
         if not cfg.curriculum_hops:
@@ -1008,7 +1092,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
 
     t0 = time.time()
     model.train()
-    if cfg.load_checkpoints:
+    if cfg.load_checkpoints and not cfg.resume_teacher_training:
         print("[train] skipped teacher training from loaded checkpoint", flush=True)
     else:
         for step in range(1, cfg.final_steps + 1):
@@ -1185,7 +1269,9 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     jump_summary = None
     direct_summary = None
     should_use_jumprec = cfg.jump_steps > 0 or (
-        loaded_checkpoint is not None and loaded_checkpoint.get("jumprec_state") is not None
+        loaded_checkpoint is not None
+        and not cfg.resume_teacher_training
+        and loaded_checkpoint.get("jumprec_state") is not None
     )
     if should_use_jumprec:
         for p in model.parameters():
@@ -1849,6 +1935,7 @@ if __name__ == "__main__":
             "dry_hardhop",
             "dry_strathop",
             "dry_strathop_gate",
+            "dry_strathop_polish",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -1875,8 +1962,10 @@ if __name__ == "__main__":
             "core3_8n4h_hardhop_jumprec",
             "core3_8n4h_strathop_teacher",
             "core3_8n4h_strathop_gate_teacher",
+            "core3_8n4h_strathop_polish_teacher",
             "core3_8n4h_strathop_jumprec",
             "core3_8n4h_strathop_gate_jumprec",
+            "core3_8n4h_strathop_polish_jumprec",
             "retrofit_8n4h_unfreeze",
             "retrofit_12n6h",
             "retrofit_unfreeze",
@@ -1888,7 +1977,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not args.local:
         raise SystemExit("Use `modal run run_recurrent_smol.py --mode retrofit_probe`, or add `--local`.")
-    if args.mode not in ("dry", "dry_hardhop", "dry_strathop", "dry_strathop_gate", "dry_sweep", "dry_sweep_reuse"):
+    if args.mode not in (
+        "dry",
+        "dry_hardhop",
+        "dry_strathop",
+        "dry_strathop_gate",
+        "dry_strathop_polish",
+        "dry_sweep",
+        "dry_sweep_reuse",
+    ):
         raise SystemExit("Local CPU guard: only dry modes are allowed locally.")
     cfg = config_for_mode(args.mode)
     if args.seed is not None:
