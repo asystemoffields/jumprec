@@ -53,10 +53,62 @@ class JointHaltConfigTests(unittest.TestCase):
         self.assertGreaterEqual(cfg.joint_halt_cost_weight_min, 0.0)
         self.assertGreater(cfg.joint_halt_cost_weight_max, cfg.joint_halt_cost_weight_min)
 
+    def test_quality_cats_modes_resolve(self):
+        train_cfg = smol.config_for_mode("core3_8n4h_strathop_joint_halt_quality_cats")
+        self.assertTrue(train_cfg.use_utility_router)
+        self.assertTrue(train_cfg.use_consistency_head)
+        self.assertEqual(train_cfg.joint_halt_steps, 0)
+        self.assertEqual(train_cfg.consistency_steps, 2000)
+        self.assertEqual(
+            train_cfg.load_checkpoint_tag,
+            "core3_8n4h_strathop_joint_halt_quality_seed{seed}",
+        )
+        self.assertEqual(
+            train_cfg.checkpoint_tag,
+            "core3_8n4h_strathop_joint_halt_quality_cats_seed{seed}",
+        )
+        self.assertTrue(train_cfg.save_checkpoints)
+
+        reuse_cfg = smol.config_for_mode("core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse_highval")
+        self.assertTrue(reuse_cfg.use_consistency_head)
+        self.assertEqual(reuse_cfg.consistency_steps, 0)
+        self.assertFalse(reuse_cfg.save_checkpoints)
+        self.assertEqual(
+            reuse_cfg.load_checkpoint_tag,
+            "core3_8n4h_strathop_polish2_joint_halt_quality_cats_seed{seed}",
+        )
+        self.assertEqual(reuse_cfg.router_val_batches, 256)
+        self.assertEqual(reuse_cfg.eval_batches, 256)
+
+    def test_dry_quality_cats_modes_resolve(self):
+        train_cfg = smol.config_for_mode("dry_strathop_polish2_joint_halt_quality_cats")
+        self.assertTrue(train_cfg.use_utility_router)
+        self.assertTrue(train_cfg.use_consistency_head)
+        self.assertEqual(train_cfg.consistency_steps, 4)
+        self.assertEqual(
+            train_cfg.load_checkpoint_tag,
+            "dry_strathop_polish2_joint_halt_quality_seed{seed}",
+        )
+        self.assertEqual(
+            train_cfg.checkpoint_tag,
+            "dry_strathop_polish2_joint_halt_quality_cats_seed{seed}",
+        )
+        self.assertTrue(train_cfg.save_checkpoints)
+
+        reuse_cfg = smol.config_for_mode("dry_strathop_polish2_joint_halt_quality_cats_reuse")
+        self.assertTrue(reuse_cfg.use_consistency_head)
+        self.assertEqual(reuse_cfg.consistency_steps, 0)
+        self.assertFalse(reuse_cfg.save_checkpoints)
+        self.assertEqual(
+            reuse_cfg.load_checkpoint_tag,
+            "dry_strathop_polish2_joint_halt_quality_cats_seed{seed}",
+        )
+
     def test_agreement_aux_does_not_mark_final_budget_unsafe(self):
         source = inspect.getsource(smol.run_experiment)
         self.assertIn("def utility_router_agreement_bce", source)
         self.assertIn("weights[-1] = 0.0", source)
+        self.assertIn("stable_target[-1] = (pred_stack[-1] == full_pred).float()", source)
 
 
 if __name__ == "__main__":

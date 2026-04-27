@@ -29,6 +29,7 @@ Training modes load the teacher family and save a reusable joint-halt checkpoint
 | `*_joint_halt_stability` | matching teacher | `*_joint_halt_stability_seed{seed}` |
 | `*_joint_halt_quality` | matching teacher | `*_joint_halt_quality_seed{seed}` |
 | `*_joint_halt_slo` | matching teacher | `*_joint_halt_slo_seed{seed}` |
+| `*_joint_halt_quality_cats` | `*_joint_halt_quality_seed{seed}` | `*_joint_halt_quality_cats_seed{seed}` |
 
 Reuse modes load the corresponding joint-halt checkpoint, skip additional
 joint-halt training, and run evaluation/audit only:
@@ -37,6 +38,12 @@ joint-halt training, and run evaluation/audit only:
 |---|---|
 | `_reuse` | Loads the matching checkpoint and runs the standard held-out audit. |
 | `_reuse_highval` | Loads the matching checkpoint and runs the larger validation/final audit with the finer threshold grid and selector scenarios. |
+
+The CATS-style quality modes are post-hoc consistency-head runs. They load a
+corrected quality joint-halt checkpoint, freeze the existing teacher/JumpRec
+path, train only `consistency_heads`, and save a reusable
+`*_joint_halt_quality_cats_seed{seed}` checkpoint. Their reuse modes load that
+CATS checkpoint directly.
 
 ## Current Cross-Seed Mapping
 

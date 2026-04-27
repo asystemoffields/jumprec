@@ -46,9 +46,8 @@ Current active focus:
 
 Check `git log --oneline -5` for the final commit hash of this update.
 
-Current working tree, before this handoff file, had unrelated changes:
+Current working tree may still contain unrelated local/scratch files:
 
-- `README.md` modified by another instance.
 - `JUMPREC_ARTIFACT_AUDIT.md` untracked but important.
 - old untracked smoke files: `SPEC.md`, `run_smoke_v0*.py`, `run_smoke_v1.py`.
 
@@ -456,6 +455,17 @@ deployment-SLO bottleneck, but not the best-quality bottleneck. The next model
 work should target the joint objective so the one-candidate utility score learns
 the agreement frontier rather than merely exposing a stricter fallback knob.
 
+Update from the CATS-style consistency pass: `*_joint_halt_quality_cats` modes
+now train a cheap consistency head on top of the corrected quality checkpoint.
+The target is adjacent-budget prediction agreement for budgets before the last
+correction, and final-budget agreement with the full teacher prediction. This
+directly avoids the old "last budget is unsafe" pathology while keeping a
+one-candidate inference contract. The head is learnable and high precision, but
+the high-validation selector showed almost no routing lift: `utility_cats_*`
+mostly shadows plain utility, and true agreement remains better on both quality
+and counted core. Treat this as a useful falsified branch, not the next
+promotion candidate.
+
 ## Useful Commands
 
 Run a Modal job:
@@ -529,10 +539,12 @@ Immediate router pivot:
 5. Use agreement labels as auxiliary supervision, but select by route utility:
    correctness, false-accept cost, full fallback cost, and counted/wall-clock
    proxy cost.
-6. Keep true agreement as the quality reference and no-agreement as the speed
+6. Do not spend more mainline effort on the current CATS head alone; it learned
+   the stability target but did not change the utility frontier.
+7. Keep true agreement as the quality reference and no-agreement as the speed
    reference; the new mode only matters if it lands between them in the right
    direction.
-7. If seed 42 or 202 fail, inspect whether the failure is candidate degradation,
+8. If seed 42 or 202 fail, inspect whether the failure is candidate degradation,
    over-acceptance, fallback overuse, or utility calibration before adding a new
    mechanism.
 
@@ -550,13 +562,16 @@ to 0.34 more counted core layers.
 
 Do not move to broad/general LLM application testing yet. The project is still
 synthetic-benchmark-positive, but the current deployable router has not matched
-the non-deployable agreement frontier. The next research step should either:
+the non-deployable agreement frontier. The CATS-style cheap consistency head was
+the obvious literature-adjacent deployable agreement substitute; it trained
+successfully but did not improve the frontier. The next research step should
+either:
 
 1. harden/refactor the runner enough that new router ideas can be tested without
    widening one giant script further; or
-2. test a new deployable agreement substitute, such as a next-budget prediction
-   target or a cheap learned consistency head, while keeping the one-candidate
-   inference contract.
+2. test a stronger deployable agreement substitute that changes training rather
+   than only adding a post-hoc head, while keeping the one-candidate inference
+   contract.
 
 Short-term engineering queue:
 

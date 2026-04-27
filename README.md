@@ -67,6 +67,11 @@ The repo currently contains several routing families:
 - `stability_router`: learns to approximate adjacent-budget agreement.
 - `utility_router`: learns a post-hoc accept/fallback policy from route utility.
 - `joint_halt`: trains the candidate path and utility halting head together.
+- `utility_cats`: adds a cheap consistency head to a utility router. The head
+  predicts whether the current candidate is stable against the next correction
+  budget, with the final budget trained against the full teacher prediction.
+  It is deployment-available because inference reads one candidate plus the
+  consistency/utility heads, rather than running the adjacent budget.
 
 The active research direction is `joint_halt`. Earlier post-hoc routers learned
 useful signals but did not close the quality/cost gap. Joint halting changes the
@@ -147,6 +152,8 @@ before launching Modal jobs:
 ```powershell
 python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality --local
 python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_slo --local
+python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality_cats --local
+python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality_cats_reuse --local
 ```
 
 ## Scaling Constraint

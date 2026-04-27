@@ -3218,3 +3218,66 @@ It can be tuned to teacher-level performance on this synthetic benchmark, but
 it does not match the agreement quality/cost frontier. The current bottleneck is
 therefore not calibration and not the final-budget auxiliary bug. It is the
 missing deployable substitute for adjacent-budget agreement.
+
+## 2026-04-27 - CATS-style consistency-head audit
+
+Literature pass motivated a CATS-style deployable agreement surrogate:
+train a cheap consistency head to predict whether the current JumpRec candidate
+is stable against more recurrence, then gate the quality utility router with
+that consistency probability. This keeps inference to one candidate plus heads,
+instead of true agreement's adjacent-budget pass.
+
+Implementation:
+
+- Added `*_joint_halt_quality_cats` modes.
+- Training modes load corrected `*_joint_halt_quality_seed{seed}` checkpoints,
+  freeze the existing teacher/JumpRec/utility path, train only
+  `consistency_heads`, and save `*_joint_halt_quality_cats_seed{seed}`.
+- Reuse/highval modes load the CATS checkpoint and evaluate `utility_cats_050`,
+  `utility_cats_070`, and `utility_cats_090`.
+- Consistency target:
+  - budgets before the last correction: current prediction equals the next
+    correction-budget prediction;
+  - final correction budget: current prediction equals the full teacher
+    prediction.
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_cats --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_cats --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_cats --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_cats_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_cats_reuse_highval --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse_highval --seed 42
+```
+
+Training diagnostics at step 2000:
+
+| Seed | Target Stable | Pred Stable | Precision | Final Target | Final Pred |
+|---:|---:|---:|---:|---:|---:|
+| 101 | 89.1% | 85.2% | 100.0% | 100.0% | 100.0% |
+| 202 | 85.2% | 78.1% | 100.0% | 98.4% | 98.4% |
+| 42 | 83.6% | 77.3% | 99.0% | 98.4% | 95.3% |
+
+High-validation means over seeds 101, 202, and repaired polish2 42:
+
+| Selector | Plain Utility Acc | Plain Utility Core | Best CATS Acc | Best CATS Core | Agreement Acc | Agreement Core |
+|---|---:|---:|---:|---:|---:|---:|
+| Speed | 99.632% | 2.88 / 18 | 99.636% | 2.90 / 18 | 99.740% | 2.70 / 18 |
+| Teacher floor | 99.658% | 2.92 / 18 | 99.662% | 2.93 / 18 | 99.746% | 2.71 / 18 |
+| Teacher +0.1 pp | 99.681% | 3.03 / 18 | 99.687% | 3.04 / 18 | 99.762% | 2.75 / 18 |
+| Teacher +0.2 pp | 99.699% | 3.06 / 18 | 99.703% | 3.07 / 18 | 99.766% | 2.79 / 18 |
+
+Conclusion:
+
+The consistency head learned the intended signal, including the corrected
+final-budget target, but it did not materially improve routing. `utility_cats`
+mostly shadows plain utility, with tiny accuracy changes and slightly higher
+counted core at the best CATS operating point. True agreement remains ahead by
+roughly 0.06 to 0.10 percentage points while also using less counted core.
+
+This falsifies the simplest CATS-style post-hoc surrogate as the missing
+deployable agreement replacement. The remaining bottleneck is likely in the
+training objective or candidate trajectory itself, not in adding a separate
+stable/unstable head after the quality checkpoint.

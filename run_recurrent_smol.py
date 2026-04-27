@@ -125,6 +125,10 @@ class Config:
     use_next_agreement_head: bool = False
     next_agreement_steps: int = 0
     next_agreement_lr: float = 4e-4
+    use_consistency_head: bool = False
+    consistency_steps: int = 0
+    consistency_lr: float = 4e-4
+    consistency_false_stable_weight: float = 4.0
     joint_halt_steps: int = 0
     joint_halt_lr: float = 1.5e-4
     joint_halt_candidate_ce_weight: float = 0.75
@@ -188,6 +192,8 @@ def config_for_mode(mode: str) -> Config:
         "dry_strathop_polish2_joint_halt_stability_reuse",
         "dry_strathop_polish2_joint_halt_quality",
         "dry_strathop_polish2_joint_halt_quality_reuse",
+        "dry_strathop_polish2_joint_halt_quality_cats",
+        "dry_strathop_polish2_joint_halt_quality_cats_reuse",
         "dry_strathop_polish2_joint_halt_slo",
         "dry_strathop_polish2_joint_halt_slo_reuse",
     ):
@@ -766,6 +772,44 @@ def config_for_mode(mode: str) -> Config:
                 cfg.joint_halt_candidate_distill_weight = 0.15
                 cfg.joint_halt_verifier_bce_weight = 0.08
                 cfg.joint_halt_agreement_bce_weight = 0.10
+            cfg.router_val_batches = 1
+            cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode in (
+            "dry_strathop_polish2_joint_halt_quality_cats",
+            "dry_strathop_polish2_joint_halt_quality_cats_reuse",
+        ):
+            is_cats_reuse = mode.endswith("_reuse")
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 0
+            cfg.jump_steps = 0
+            cfg.joint_halt_steps = 0
+            cfg.consistency_steps = 0 if is_cats_reuse else 4
+            cfg.direct_steps = 0
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 8.0
+            cfg.load_checkpoints = True
+            cfg.load_checkpoint_tag = (
+                "dry_strathop_polish2_joint_halt_quality_cats_seed{seed}"
+                if is_cats_reuse
+                else "dry_strathop_polish2_joint_halt_quality_seed{seed}"
+            )
+            cfg.checkpoint_tag = "dry_strathop_polish2_joint_halt_quality_cats_seed{seed}"
+            cfg.save_checkpoints = not is_cats_reuse
+            cfg.load_jumprec_state = True
+            cfg.use_utility_router = True
+            cfg.use_consistency_head = True
+            cfg.utility_false_accept_weight = 12.0
+            cfg.utility_cost_weight = 0.08
+            cfg.utility_correctness_bce_weight = 0.10
+            cfg.joint_halt_candidate_ce_weight = 1.00
+            cfg.joint_halt_candidate_distill_weight = 0.15
+            cfg.joint_halt_verifier_bce_weight = 0.08
+            cfg.joint_halt_agreement_bce_weight = 0.08
             cfg.router_val_batches = 1
             cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
             cfg.timing_batch_sizes = "1,2"
@@ -1594,6 +1638,73 @@ def config_for_mode(mode: str) -> Config:
         cfg.timing_batches = 16
         cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
         cfg.eval_batches = 128
+        cfg.log_every = 500
+    elif mode in (
+        "core3_8n4h_strathop_joint_halt_quality_cats",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_cats",
+        "core3_8n4h_strathop_joint_halt_quality_cats_reuse",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse",
+        "core3_8n4h_strathop_joint_halt_quality_cats_reuse_highval",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse_highval",
+    ):
+        is_polish2_cats = mode.startswith("core3_8n4h_strathop_polish2")
+        is_cats_reuse = "_reuse" in mode
+        is_highval_reuse = mode.endswith("_reuse_highval")
+        family_prefix = "core3_8n4h_strathop_polish2" if is_polish2_cats else "core3_8n4h_strathop"
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        if is_polish2_cats:
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 8.0
+        else:
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+            cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.joint_halt_steps = 0
+        cfg.consistency_steps = 0 if is_cats_reuse else 2000
+        cfg.direct_steps = 0
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.load_checkpoint_tag = (
+            f"{family_prefix}_joint_halt_quality_cats_seed{{seed}}"
+            if is_cats_reuse
+            else f"{family_prefix}_joint_halt_quality_seed{{seed}}"
+        )
+        cfg.checkpoint_tag = f"{family_prefix}_joint_halt_quality_cats_seed{{seed}}"
+        cfg.save_checkpoints = not is_cats_reuse
+        cfg.load_jumprec_state = True
+        cfg.use_utility_router = True
+        cfg.use_consistency_head = True
+        cfg.utility_false_accept_weight = 12.0
+        cfg.utility_cost_weight = 0.08
+        cfg.utility_correctness_bce_weight = 0.10
+        cfg.joint_halt_candidate_ce_weight = 1.00
+        cfg.joint_halt_candidate_distill_weight = 0.15
+        cfg.joint_halt_verifier_bce_weight = 0.08
+        cfg.joint_halt_agreement_bce_weight = 0.08
+        cfg.router_val_batches = 64
+        cfg.router_threshold_candidates = "0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80,0.85,0.90,0.95,0.97,0.99"
+        cfg.timing_batches = 16
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.eval_batches = 128
+        if is_highval_reuse:
+            cfg.router_val_batches = 256
+            cfg.eval_batches = 256
+            cfg.router_threshold_candidates = (
+                "0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,"
+                "0.50,0.60,0.70,0.80,0.85,0.90,0.95,0.97,0.99"
+            )
+            cfg.timing_batches = 8
+            cfg.timing_batch_sizes = "1,64"
         cfg.log_every = 500
     elif mode in (
         "core3_8n4h_strathop_joint_halt",
@@ -2447,6 +2558,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         losses = F.binary_cross_entropy_with_logits(accept_logits, safe_target, reduction="none")
         return float(cfg.joint_halt_agreement_bce_weight) * (losses * weights).sum() / weights.sum().clamp_min(1e-6)
 
+    def consistency_bce_with_logits(consistency_logits, stable_target, hops):
+        weights = example_weights(hops).view(1, -1).expand_as(consistency_logits)
+        false_stable_weight = torch.full_like(stable_target, float(cfg.consistency_false_stable_weight))
+        weights = weights * torch.where(stable_target > 0.5, torch.ones_like(stable_target), false_stable_weight)
+        losses = F.binary_cross_entropy_with_logits(consistency_logits, stable_target, reduction="none")
+        return (losses * weights).sum() / weights.sum().clamp_min(1e-6)
+
     model = RecurrentSmol().to(device)
     trainable = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
     print(f"[trainable] params={sum(p.numel() for _, p in trainable)/1e6:.3f}M")
@@ -2727,6 +2845,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         or cfg.stability_steps > 0
         or cfg.utility_router_steps > 0
         or cfg.next_agreement_steps > 0
+        or cfg.consistency_steps > 0
         or cfg.joint_halt_steps > 0
         or (
             loaded_checkpoint is not None
@@ -2801,6 +2920,19 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                             for _ in range(cfg.max_correct + 1)
                         ]
                     )
+                self.consistency_heads = None
+                if cfg.use_consistency_head:
+                    consistency_in = verifier_in + 3
+                    self.consistency_heads = nn.ModuleList(
+                        [
+                            nn.Sequential(
+                                nn.Linear(consistency_in, cfg.d_model),
+                                nn.GELU(),
+                                nn.Linear(cfg.d_model, 1),
+                            )
+                            for _ in range(cfg.max_correct + 1)
+                        ]
+                    )
                 self.utility_router = None
                 if cfg.use_utility_router:
                     utility_in = verifier_in + 3
@@ -2859,6 +2991,20 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     raise RuntimeError("stability head is disabled")
                 return self.stability_heads[corrections](features).squeeze(-1)
 
+            def consistency_logit(self, corrections: int, features, verifier_logit):
+                if self.consistency_heads is None:
+                    raise RuntimeError("consistency head is disabled")
+                batch_size = features.size(0)
+                budget_frac = corrections / max(1, cfg.max_correct)
+                full_core_layers = float(cfg.loop_steps * cfg.core_layers)
+                core_frac = (float(cfg.jump_layers) + float(corrections * cfg.core_layers)) / full_core_layers
+                extras = [
+                    verifier_logit.unsqueeze(-1),
+                    torch.full((batch_size, 1), budget_frac, dtype=features.dtype, device=features.device),
+                    torch.full((batch_size, 1), core_frac, dtype=features.dtype, device=features.device),
+                ]
+                return self.consistency_heads[corrections](torch.cat([features] + extras, dim=-1)).squeeze(-1)
+
             def utility_logit(self, corrections: int, features, verifier_logit, stability_logit=None):
                 if self.utility_router is None:
                     raise RuntimeError("utility router is disabled")
@@ -2885,7 +3031,16 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 return self.next_pred_heads[corrections](features)
 
             def forward_encoded(self, state0, layer_mask, position_ids, position_embeddings, lengths):
-                landing_states, final_states, logits, verify, stability, utility, next_pred = [], [], [], [], [], [], []
+                landing_states, final_states, logits, verify, stability, consistency, utility, next_pred = (
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                )
                 for corrections in range(cfg.max_correct + 1):
                     landing = self.jump(state0, layer_mask, position_ids, position_embeddings, lengths, corrections)
                     final = self.teacher.run_steps_from(
@@ -2914,6 +3069,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     if self.stability_heads is not None:
                         stability_logit = self.stability_logit(corrections, features)
                         stability.append(stability_logit)
+                    if self.consistency_heads is not None:
+                        consistency.append(self.consistency_logit(corrections, features, verifier_logit))
                     if self.utility_router is not None:
                         utility.append(
                             self.utility_logit(corrections, features, verifier_logit, stability_logit)
@@ -2926,6 +3083,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     "logits": logits,
                     "verify": verify,
                     "stability": stability if self.stability_heads is not None else None,
+                    "consistency": consistency if self.consistency_heads is not None else None,
                     "utility": utility if self.utility_router is not None else None,
                     "next_pred": next_pred if self.next_pred_heads is not None else None,
                 }
@@ -2961,6 +3119,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 result = [final_logits, verifier_logit]
                 if self.stability_heads is not None:
                     result.append(self.stability_logit(corrections, features))
+                if self.consistency_heads is not None:
+                    result.append(self.consistency_logit(corrections, features, verifier_logit))
                 if self.utility_router is not None:
                     stability_logit = result[2] if self.stability_heads is not None else None
                     result.append(self.utility_logit(corrections, features, verifier_logit, stability_logit))
@@ -2988,6 +3148,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     or cfg.use_stability_head
                     or cfg.use_utility_router
                     or cfg.use_next_agreement_head
+                    or cfg.use_consistency_head
                 ),
             )
             if (
@@ -2995,6 +3156,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 or cfg.use_stability_head
                 or cfg.use_utility_router
                 or cfg.use_next_agreement_head
+                or cfg.use_consistency_head
             ) and (load_result.missing_keys or load_result.unexpected_keys):
                 print(
                     "[checkpoint] partial JumpRec load "
@@ -3478,6 +3640,73 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 p.requires_grad_(requires_grad)
             save_checkpoint(model, jumprec)
 
+        if cfg.use_consistency_head and cfg.consistency_steps > 0:
+            if jumprec.consistency_heads is None:
+                raise RuntimeError("consistency_steps requires cfg.use_consistency_head")
+            consistency_restore_params = list(jumprec.parameters())
+            consistency_restore_requires_grad = [p.requires_grad for p in consistency_restore_params]
+            for p in consistency_restore_params:
+                p.requires_grad_(False)
+            for p in jumprec.consistency_heads.parameters():
+                p.requires_grad_(True)
+            opt_consistency = torch.optim.AdamW(jumprec.consistency_heads.parameters(), lr=cfg.consistency_lr)
+            t_consistency = time.time()
+            jumprec.eval()
+            jumprec.consistency_heads.train()
+            for step in range(1, cfg.consistency_steps + 1):
+                input_ids, attention_mask, lengths, target, _, hops, _ = batch_encoded(cfg.batch_size)
+                with torch.no_grad():
+                    state0, layer_mask, position_ids, position_embeddings, _, teacher_logits = teacher_collect(
+                        input_ids,
+                        attention_mask,
+                        lengths,
+                    )
+                    full_pred = teacher_logits.argmax(dim=-1)
+                out = jumprec.forward_encoded(
+                    state0.detach(),
+                    layer_mask,
+                    position_ids,
+                    position_embeddings,
+                    lengths,
+                )
+                pred_stack = torch.stack(
+                    [logits_i.detach().argmax(dim=-1) for logits_i in out["logits"]],
+                    dim=0,
+                )
+                consistency_logits = torch.stack(out["consistency"], dim=0)
+                stable_target = torch.zeros_like(consistency_logits)
+                if cfg.max_correct > 0:
+                    stable_target[:-1] = (pred_stack[:-1] == pred_stack[1:]).float()
+                stable_target[-1] = (pred_stack[-1] == full_pred).float()
+                consistency_loss = consistency_bce_with_logits(consistency_logits, stable_target, hops)
+                opt_consistency.zero_grad()
+                consistency_loss.backward()
+                torch.nn.utils.clip_grad_norm_(jumprec.consistency_heads.parameters(), 1.0)
+                opt_consistency.step()
+                if step % cfg.log_every == 0 or step == cfg.consistency_steps:
+                    consistency_prob = torch.sigmoid(consistency_logits.detach())
+                    consistency_pred = consistency_prob >= 0.5
+                    stable_bool = stable_target.bool()
+                    pred_pos = consistency_pred.float().mean().item()
+                    target_pos = stable_target.float().mean().item()
+                    acc = (consistency_pred == stable_bool).float().mean().item()
+                    precision_denom = consistency_pred.float().sum().clamp_min(1.0)
+                    precision = (consistency_pred & stable_bool).float().sum().item() / precision_denom.item()
+                    final_pred_pos = consistency_pred[-1].float().mean().item()
+                    final_target_pos = stable_target[-1].float().mean().item()
+                    print(
+                        f"  cats step {step:5d}/{cfg.consistency_steps} "
+                        f"loss {consistency_loss.item():.4f} "
+                        f"acc {acc*100:.1f}% pred_stable {pred_pos*100:.1f}% "
+                        f"target_stable {target_pos*100:.1f}% precision {precision*100:.1f}% "
+                        f"final_pred {final_pred_pos*100:.1f}% final_target {final_target_pos*100:.1f}% "
+                        f"elapsed {time.time()-t_consistency:.1f}s",
+                        flush=True,
+                    )
+            for p, requires_grad in zip(consistency_restore_params, consistency_restore_requires_grad):
+                p.requires_grad_(requires_grad)
+            save_checkpoint(model, jumprec)
+
         def eval_jumprec(audit_variant: str = "normal", include_heldout: bool = True):
             jumprec.eval()
             thresholds = [(0.80, "080"), (0.90, "090"), (0.95, "095")]
@@ -3495,6 +3724,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             )
             utility_policy_defs = [("utility", False), ("utility_guarded", True)] if cfg.use_utility_router else []
             utility_policy_names = [name for name, _ in utility_policy_defs]
+            consistency_policy_thresholds = [0.50, 0.70, 0.90]
+            consistency_policy_names = (
+                [f"utility_cats_{int(threshold * 100):03d}" for threshold in consistency_policy_thresholds]
+                if cfg.use_consistency_head and cfg.use_utility_router
+                else []
+            )
             next_agreement_thresholds = [0.00, 0.10, 0.15, 0.20, 0.30, 0.50, 0.70, 0.90]
             next_agreement_policy_names = (
                 [f"nextagree_{int(threshold * 100):03d}" for threshold in next_agreement_thresholds]
@@ -3503,7 +3738,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             )
             all_policy_names = [
                 policy_name for policy_name, _ in router_policies
-            ] + stability_policy_names + budget_policy_names + utility_policy_names + next_agreement_policy_names
+            ]
+            all_policy_names += stability_policy_names
+            all_policy_names += budget_policy_names
+            all_policy_names += utility_policy_names
+            all_policy_names += consistency_policy_names
+            all_policy_names += next_agreement_policy_names
             full_core_layers = float(cfg.loop_steps * cfg.core_layers)
             metrics = {f"jump_c{c}_acc": 0.0 for c in range(cfg.max_correct + 1)}
             if cfg.use_budget_controller:
@@ -3691,6 +3931,35 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     accept = (~trusted) & (utility_stack[c] >= threshold)
                     if guarded:
                         accept = accept & (margin_stack[c] >= 0.05) & (max_prob_stack[c] >= 0.45)
+                    chosen = torch.where(accept, torch.full_like(chosen, c), chosen)
+                    routed_pred = torch.where(accept, pred_stack[c], routed_pred)
+                    trusted = trusted | accept
+                core_layers = torch.where(
+                    trusted,
+                    torch.full_like(chosen.float(), float(cfg.jump_layers))
+                    + chosen.float() * float(cfg.core_layers),
+                    torch.full_like(chosen.float(), full_core_layers),
+                )
+                return routed_pred, trusted, chosen, core_layers
+
+            def route_utility_consistency_predictions(
+                pred_stack,
+                utility_stack,
+                consistency_stack,
+                full_pred,
+                target,
+                utility_threshold: float,
+                consistency_threshold: float,
+            ):
+                trusted = torch.zeros_like(target, dtype=torch.bool)
+                chosen = torch.full_like(target, cfg.loop_steps)
+                routed_pred = full_pred
+                for c in range(cfg.max_correct + 1):
+                    accept = (
+                        (~trusted)
+                        & (utility_stack[c] >= utility_threshold)
+                        & (consistency_stack[c] >= consistency_threshold)
+                    )
                     chosen = torch.where(accept, torch.full_like(chosen, c), chosen)
                     routed_pred = torch.where(accept, pred_stack[c], routed_pred)
                     trusted = trusted | accept
@@ -4008,6 +4277,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                 [torch.sigmoid(v) for v in jump_out["utility"]],
                                 dim=0,
                             )
+                        consistency_stack = None
+                        if cfg.use_consistency_head:
+                            consistency_stack = torch.stack(
+                                [torch.sigmoid(v) for v in jump_out["consistency"]],
+                                dim=0,
+                            )
                         next_pred_class = None
                         next_pred_conf = None
                         if cfg.use_next_agreement_head:
@@ -4080,6 +4355,33 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                         target,
                                         threshold,
                                         guarded,
+                                    )
+                                    item = out["policies"][policy_name][key]
+                                    item["acc"] += (routed_pred == target).float().mean().item()
+                                    item["full_loop_rate"] += (~trusted).float().mean().item()
+                                    item["coverage"] += trusted.float().mean().item()
+                                    item["avg_tail_loops"] += torch.where(
+                                        trusted,
+                                        chosen.float(),
+                                        torch.full_like(chosen.float(), float(cfg.loop_steps)),
+                                    ).mean().item()
+                                    item["avg_core_layers"] += core_layers.mean().item()
+                                    record_accepts(policy_name, key, trusted, chosen, routed_pred, target)
+                            if cfg.use_consistency_head and cfg.use_utility_router:
+                                for policy_name, consistency_threshold in zip(
+                                    consistency_policy_names,
+                                    consistency_policy_thresholds,
+                                ):
+                                    routed_pred, trusted, chosen, core_layers = (
+                                        route_utility_consistency_predictions(
+                                            pred_stack,
+                                            utility_stack,
+                                            consistency_stack,
+                                            full_pred,
+                                            target,
+                                            threshold,
+                                            consistency_threshold,
+                                        )
                                     )
                                     item = out["policies"][policy_name][key]
                                     item["acc"] += (routed_pred == target).float().mean().item()
@@ -4433,6 +4735,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                             [torch.sigmoid(v) for v in out["utility"]],
                             dim=0,
                         )
+                    consistency_stack = None
+                    if cfg.use_consistency_head:
+                        consistency_stack = torch.stack(
+                            [torch.sigmoid(v) for v in out["consistency"]],
+                            dim=0,
+                        )
                     next_pred_class = None
                     next_pred_conf = None
                     if cfg.use_next_agreement_head:
@@ -4600,6 +4908,36 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     torch.full_like(chosen_utility.float(), float(cfg.loop_steps)),
                                 ).mean().item()
                                 metrics[f"{prefix}_avg_core_layers"] += utility_core_layers.mean().item()
+                        if cfg.use_consistency_head and cfg.use_utility_router:
+                            for policy_name, consistency_threshold in zip(
+                                consistency_policy_names,
+                                consistency_policy_thresholds,
+                            ):
+                                (
+                                    pred_cats,
+                                    trusted_cats,
+                                    chosen_cats,
+                                    cats_core_layers,
+                                ) = route_utility_consistency_predictions(
+                                    pred_stack,
+                                    utility_stack,
+                                    consistency_stack,
+                                    full_pred,
+                                    target,
+                                    threshold,
+                                    consistency_threshold,
+                                )
+                                prefix = f"router_{suffix}_{policy_name}"
+                                metrics[f"{prefix}_acc"] += (pred_cats == target).float().mean().item()
+                                metrics[f"{prefix}_full_loop_rate"] += (
+                                    ~trusted_cats
+                                ).float().mean().item()
+                                metrics[f"{prefix}_avg_tail_loops"] += torch.where(
+                                    trusted_cats,
+                                    chosen_cats.float(),
+                                    torch.full_like(chosen_cats.float(), float(cfg.loop_steps)),
+                                ).mean().item()
+                                metrics[f"{prefix}_avg_core_layers"] += cats_core_layers.mean().item()
                         if cfg.use_next_agreement_head:
                             for policy_name, next_threshold in zip(
                                 next_agreement_policy_names,
@@ -5247,6 +5585,86 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 out["jumprec_serial_utility_090_ms_per_batch"] = time_fn(
                     lambda ids, mask, lens: serial_jumprec_utility(ids, mask, lens, 0.90)
                 )
+                if cfg.use_consistency_head:
+                    def serial_jumprec_utility_cats(
+                        ids,
+                        mask,
+                        lens,
+                        utility_threshold: float = 0.10,
+                        consistency_threshold: float = 0.70,
+                    ):
+                        state0, layer_mask, position_ids, position_embeddings = model.encode(ids, mask)
+                        open_idx = torch.arange(ids.size(0), device=ids.device)
+                        last = None
+
+                        def take_batch(x, idx):
+                            if x is None:
+                                return None
+                            if x.size(0) == ids.size(0):
+                                return x.index_select(0, idx)
+                            return x
+
+                        for corrections in range(cfg.max_correct + 1):
+                            if open_idx.numel() == 0:
+                                break
+                            sub_state0 = state0.index_select(0, open_idx)
+                            sub_mask = take_batch(layer_mask, open_idx)
+                            sub_pos = take_batch(position_ids, open_idx)
+                            sub_emb = (
+                                tuple(take_batch(t, open_idx) for t in position_embeddings)
+                                if position_embeddings
+                                else None
+                            )
+                            sub_lens = lens.index_select(0, open_idx)
+                            result = jumprec.forward_budget_encoded(
+                                sub_state0,
+                                sub_mask,
+                                sub_pos,
+                                sub_emb,
+                                sub_lens,
+                                corrections,
+                            )
+                            logits = result[0]
+                            consistency_idx = 3 if cfg.use_stability_head else 2
+                            consistency = result[consistency_idx]
+                            utility = result[consistency_idx + 1]
+                            accept = (
+                                (torch.sigmoid(utility) >= utility_threshold)
+                                & (torch.sigmoid(consistency) >= consistency_threshold)
+                            )
+                            last = logits
+                            open_idx = open_idx[~accept]
+                        if open_idx.numel() > 0:
+                            sub_state0 = state0.index_select(0, open_idx)
+                            sub_mask = take_batch(layer_mask, open_idx)
+                            sub_pos = take_batch(position_ids, open_idx)
+                            sub_emb = (
+                                tuple(take_batch(t, open_idx) for t in position_embeddings)
+                                if position_embeddings
+                                else None
+                            )
+                            sub_lens = lens.index_select(0, open_idx)
+                            full = model.run_steps_from(
+                                sub_state0,
+                                sub_state0,
+                                sub_mask,
+                                sub_pos,
+                                sub_emb,
+                                0,
+                                cfg.loop_steps,
+                            )
+                            last = model.classify_state(full, sub_lens, sub_mask, sub_pos, sub_emb)
+                        return last
+
+                    out["jumprec_serial_utility_cats050_010_ms_per_batch"] = time_fn(
+                        lambda ids, mask, lens: serial_jumprec_utility_cats(ids, mask, lens, 0.10, 0.50)
+                    )
+                    out["jumprec_serial_utility_cats070_010_ms_per_batch"] = time_fn(
+                        lambda ids, mask, lens: serial_jumprec_utility_cats(ids, mask, lens, 0.10, 0.70)
+                    )
+                    out["jumprec_serial_utility_cats090_010_ms_per_batch"] = time_fn(
+                        lambda ids, mask, lens: serial_jumprec_utility_cats(ids, mask, lens, 0.10, 0.90)
+                    )
             if cfg.use_next_agreement_head:
                 def serial_jumprec_nextagree(
                     ids,
@@ -5527,6 +5945,19 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                             lambda ids, mask, lens: serial_jumprec_utility(ids, mask, lens, 0.90),
                             timing_bsz,
                         )
+                        if cfg.use_consistency_head:
+                            item["jumprec_serial_utility_cats050_010_ms_per_batch"] = time_fn(
+                                lambda ids, mask, lens: serial_jumprec_utility_cats(ids, mask, lens, 0.10, 0.50),
+                                timing_bsz,
+                            )
+                            item["jumprec_serial_utility_cats070_010_ms_per_batch"] = time_fn(
+                                lambda ids, mask, lens: serial_jumprec_utility_cats(ids, mask, lens, 0.10, 0.70),
+                                timing_bsz,
+                            )
+                            item["jumprec_serial_utility_cats090_010_ms_per_batch"] = time_fn(
+                                lambda ids, mask, lens: serial_jumprec_utility_cats(ids, mask, lens, 0.10, 0.90),
+                                timing_bsz,
+                            )
                     if cfg.use_next_agreement_head:
                         item["jumprec_serial_nextagree050_080_ms_per_batch"] = time_fn(
                             lambda ids, mask, lens: serial_jumprec_nextagree(ids, mask, lens, 0.80, 0.50),
@@ -5662,6 +6093,8 @@ if __name__ == "__main__":
             "dry_strathop_polish2_joint_halt_stability_reuse",
             "dry_strathop_polish2_joint_halt_quality",
             "dry_strathop_polish2_joint_halt_quality_reuse",
+            "dry_strathop_polish2_joint_halt_quality_cats",
+            "dry_strathop_polish2_joint_halt_quality_cats_reuse",
             "dry_strathop_polish2_joint_halt_slo",
             "dry_strathop_polish2_joint_halt_slo_reuse",
             "dry_sweep",
@@ -5748,6 +6181,12 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_polish2_joint_halt_quality_reuse",
             "core3_8n4h_strathop_joint_halt_quality_reuse_highval",
             "core3_8n4h_strathop_polish2_joint_halt_quality_reuse_highval",
+            "core3_8n4h_strathop_joint_halt_quality_cats",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_cats",
+            "core3_8n4h_strathop_joint_halt_quality_cats_reuse",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse",
+            "core3_8n4h_strathop_joint_halt_quality_cats_reuse_highval",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse_highval",
             "core3_8n4h_strathop_joint_halt_quality_stability",
             "core3_8n4h_strathop_polish2_joint_halt_quality_stability",
             "core3_8n4h_strathop_joint_halt_quality_stability_reuse",
@@ -5815,6 +6254,8 @@ if __name__ == "__main__":
         "dry_strathop_polish2_joint_halt_stability_reuse",
         "dry_strathop_polish2_joint_halt_quality",
         "dry_strathop_polish2_joint_halt_quality_reuse",
+        "dry_strathop_polish2_joint_halt_quality_cats",
+        "dry_strathop_polish2_joint_halt_quality_cats_reuse",
         "dry_strathop_polish2_joint_halt_slo",
         "dry_strathop_polish2_joint_halt_slo_reuse",
         "dry_sweep",
