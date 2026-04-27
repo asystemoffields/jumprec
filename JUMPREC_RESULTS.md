@@ -1980,3 +1980,78 @@ the final eval shows some sampling variance around the strict 99.5% full target.
 For headline use, repeat or widen the gate. For the next diagnostic experiment,
 this checkpoint is strong enough to run JumpRec and test whether the repaired
 teacher also gives the expected compute-saving router behavior.
+
+## 2026-04-26 - JumpRec on repaired stratified seed 42
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_jumprec --seed 42
+```
+
+Loaded checkpoint:
+
+```text
+core3_8n4h_strathop_polish2_seed42
+```
+
+Teacher and direct control:
+
+| Model | Accuracy | Hop 1 | Hop 2 | Hop 3 | Hop 4 | Counted Core Layers |
+|---|---:|---:|---:|---:|---:|---:|
+| Full recurrent teacher | 99.53% | 100.00% | 100.00% | 99.49% | 98.68% | 18 |
+| 3-layer direct control | 59.13% | 99.35% | 53.16% | 38.10% | 46.64% | 3 |
+
+Fixed JumpRec budgets:
+
+| Budget | Accuracy |
+|---:|---:|
+| c0 | 47.95% |
+| c1 | 96.18% |
+| c2 | 99.35% |
+| c3 | 99.54% |
+
+Router results:
+
+| Policy | Threshold | Accuracy | Full-Loop Rate | Avg Core Layers | Core Savings |
+|---|---:|---:|---:|---:|---:|
+| No agreement | 0.80 | 97.87% | 0.15% | 3.08 / 18 | 82.87% |
+| No agreement | 0.90 | 98.47% | 0.28% | 3.18 / 18 | 82.34% |
+| No agreement | 0.95 | 98.89% | 0.75% | 3.32 / 18 | 81.58% |
+| Agreement | 0.80 | 99.51% | 1.06% | 3.23 / 18 | 82.05% |
+| Agreement | 0.90 | 99.56% | 1.53% | 3.33 / 18 | 81.47% |
+| Agreement | 0.95 | 99.59% | 2.33% | 3.48 / 18 | 80.65% |
+
+Timing sweep:
+
+| Batch Size | Full Teacher | Serial 0.90 | Serial 0.95 | Agreement 0.80 |
+|---:|---:|---:|---:|---:|
+| 1 | 25.94 ms | 9.45 ms | 9.83 ms | 18.95 ms |
+| 2 | 25.39 ms | 14.10 ms | 14.75 ms | 23.94 ms |
+| 4 | 25.58 ms | 15.51 ms | 15.37 ms | 27.88 ms |
+| 8 | 24.82 ms | 17.58 ms | 19.37 ms | 29.79 ms |
+| 16 | 26.25 ms | 20.75 ms | 22.89 ms | 38.66 ms |
+| 32 | 26.58 ms | 24.53 ms | 28.02 ms | 44.81 ms |
+| 64 | 34.45 ms | 31.19 ms | 33.77 ms | 50.44 ms |
+
+Interpretation:
+
+This is the cleanest seed-42 JumpRec result so far. The repaired teacher is
+strong on a fresh 96-batch eval, and the direct 3-layer control is far too weak
+to explain the result away as shallow shortcut learning. The fixed-budget
+profile is also the expected recurrent shape: c0 is poor, c1 is useful, and c2
+or c3 reaches teacher-like accuracy.
+
+The no-agreement router is fast and compute-light but still leaves quality on
+the table relative to the teacher. The agreement-filtered router reaches
+teacher-level accuracy while using about 3.2-3.5 of 18 counted recurrent core
+layers, but its current serial implementation is slower in the timing sweep.
+So the result strengthens the quality/compute story, while keeping the
+hardware-aware execution caveat intact.
+
+Across the three strong hard-case teachers now available, the result is broadly
+consistent: seeds 101 and 202 were solved by stratified replay, and seed 42
+needed the second-stage polish. Before turning this into a headline, the next
+teacher robustness step should use a wider or repeated validation gate, and the
+next artifact step should run the audit checks before moving toward a
+general-use looped LLM bridge.
