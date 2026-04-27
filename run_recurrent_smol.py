@@ -102,6 +102,7 @@ class Config:
     direct_steps: int = 0
     direct_layers: int = 3
     direct_lr: float = 4e-4
+    audit_prompt_variants: str = ""
 
     @property
     def loop_steps(self) -> int:
@@ -121,6 +122,8 @@ def config_for_mode(mode: str) -> Config:
         "dry_strathop_polish2",
         "dry_strathop_eval",
         "dry_strathop_polish2_eval",
+        "dry_strathop_audit",
+        "dry_strathop_polish2_audit",
     ):
         cfg.use_fake_model = True
         cfg.d_model = 64
@@ -244,6 +247,36 @@ def config_for_mode(mode: str) -> Config:
             cfg.final_loop_loss_weight = 8.0
             cfg.load_checkpoints = True
             cfg.checkpoint_tag = "dry_strathop_polish2_seed{seed}"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop_audit":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 0
+            cfg.jump_steps = 0
+            cfg.direct_steps = 0
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+            cfg.final_loop_loss_weight = 4.0
+            cfg.load_checkpoints = True
+            cfg.checkpoint_tag = "dry_strathop_gate_seed{seed}"
+            cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop_polish2_audit":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 0
+            cfg.jump_steps = 0
+            cfg.direct_steps = 0
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 8.0
+            cfg.load_checkpoints = True
+            cfg.checkpoint_tag = "dry_strathop_polish2_seed{seed}"
+            cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
             cfg.timing_batch_sizes = "1,2"
         elif mode == "dry_sweep":
             cfg.timing_batch_sizes = "1,2,4"
@@ -608,6 +641,46 @@ def config_for_mode(mode: str) -> Config:
         cfg.eval_batches = 256
         cfg.timing_batches = 16
         cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_audit_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
+        cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
+        cfg.eval_batches = 128
+        cfg.timing_batches = 8
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_polish2_audit_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 8.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_polish2_seed{seed}"
+        cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
+        cfg.eval_batches = 128
+        cfg.timing_batches = 8
+        cfg.log_every = 500
     elif mode == "core3_8n4h_strathop_jumprec":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -794,18 +867,29 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             return []
         return [float(x.strip()) for x in value.split(",") if x.strip()]
 
+    def parse_str_list(value: str) -> List[str]:
+        return [x.strip() for x in value.split(",") if x.strip()]
+
     hop_sample_weights = parse_float_list(cfg.hop_sample_weights)
     hop_loss_weights = parse_float_list(cfg.hop_loss_weights)
+    audit_prompt_variants = parse_str_list(cfg.audit_prompt_variants)
     if hop_sample_weights and len(hop_sample_weights) < cfg.max_hops:
         raise ValueError("hop_sample_weights must provide at least max_hops entries")
     if hop_loss_weights and len(hop_loss_weights) < cfg.max_hops:
         raise ValueError("hop_loss_weights must provide at least max_hops entries")
+    allowed_audit_variants = {"normal", "relabel", "map_scramble", "hop_random", "task_random"}
+    for variant in audit_prompt_variants:
+        if variant not in allowed_audit_variants:
+            raise ValueError(f"unknown audit prompt variant: {variant}")
 
     def make_examples(
         batch_size: int,
         active_max_hops: int | None = None,
         hard_hop_sampling: bool = True,
+        audit_variant: str = "normal",
     ):
+        if audit_variant not in allowed_audit_variants:
+            raise ValueError(f"unknown audit prompt variant: {audit_variant}")
         texts = []
         targets_l = []
         step_targets_l = []
@@ -819,6 +903,15 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             for i, j in enumerate(perm):
                 inv[j] = i
             start = random.randrange(cfg.n_nodes)
+            display_perm = list(perm)
+            if audit_variant == "map_scramble":
+                display_perm = list(range(cfg.n_nodes))
+                random.shuffle(display_perm)
+                if display_perm == perm:
+                    display_perm = display_perm[1:] + display_perm[:1]
+            label_map = list(range(cfg.n_nodes))
+            if audit_variant == "relabel":
+                random.shuffle(label_map)
             if hard_hop_sampling and hop_sample_weights:
                 weights = hop_sample_weights[:max_hops]
                 total_weight = sum(weights)
@@ -837,6 +930,14 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             else:
                 hops = random.randint(1, max_hops)
             task_id = random.randrange(len(task_names))
+            display_task_id = task_id
+            if audit_variant == "task_random" and len(task_names) > 1:
+                choices = [i for i in range(len(task_names)) if i != task_id]
+                display_task_id = random.choice(choices)
+            display_hops = hops
+            if audit_variant == "hop_random" and max_hops > 1:
+                choices = [i for i in range(1, max_hops + 1) if i != hops]
+                display_hops = random.choice(choices)
             cur = start
             step_targets = []
             for step in range(cfg.loop_steps):
@@ -852,10 +953,16 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     nxt = perm[fwd]
                 if hops > step:
                     cur = nxt
-                step_targets.append(cur)
-            mapping = " ".join(f"{letters[i]}->{letters[perm[i]]}" for i in range(cfg.n_nodes))
-            task = task_names[task_id]
-            text = f"Task: {task}. Map: {mapping}. Start: {letters[start]}. Hops: {hops}. Answer:"
+                step_targets.append(label_map[cur])
+            mapping = " ".join(
+                f"{letters[label_map[i]]}->{letters[label_map[display_perm[i]]]}"
+                for i in range(cfg.n_nodes)
+            )
+            task = task_names[display_task_id]
+            text = f"Task: {task}. Map: {mapping}. Start: {letters[label_map[start]]}. Hops: {display_hops}. Answer:"
+            after_answer = text.split("Answer:", 1)[1]
+            if after_answer.strip():
+                raise AssertionError("generated prompt leaked text after Answer:")
             texts.append(text)
             targets_l.append(step_targets[-1])
             step_targets_l.append(step_targets)
@@ -1074,11 +1181,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         batch_size: int,
         active_max_hops: int | None = None,
         hard_hop_sampling: bool = True,
+        audit_variant: str = "normal",
     ):
         texts, target, step_targets, hops, task_ids = make_examples(
             batch_size,
             active_max_hops,
             hard_hop_sampling,
+            audit_variant,
         )
         input_ids, attention_mask, lengths = encode_texts(texts)
         return input_ids, attention_mask, lengths, target, step_targets, hops, task_ids
@@ -1303,7 +1412,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         else:
             save_checkpoint(model)
 
-    def eval_model():
+    def eval_model(audit_variant: str = "normal"):
         model.eval()
         final_acc = [0.0 for _ in range(cfg.loop_steps + 1)]
         step_acc = [None] + [0.0 for _ in range(cfg.loop_steps)]
@@ -1321,6 +1430,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 input_ids, attention_mask, lengths, target, step_targets, hops, task_ids = batch_encoded(
                     cfg.batch_size,
                     hard_hop_sampling=False,
+                    audit_variant=audit_variant,
                 )
                 logits_by_loop = model.collect_logits(
                     input_ids, attention_mask, lengths, cfg.loop_steps, include_zero=True
@@ -1378,6 +1488,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             for i in range(cfg.loop_steps + 1)
         }
         out = {
+            "audit_variant": audit_variant,
             "final_acc_by_loops": {str(i): final_acc[i] for i in range(cfg.loop_steps + 1)},
             "step_acc_by_loops": step_acc_out,
             "zero_loop_acc": final_acc[0],
@@ -1396,6 +1507,18 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     if best_teacher_summary is not None:
         eval_summary["teacher_val_best"] = best_teacher_summary
     print(f"[eval] {json.dumps(eval_summary, indent=2)}")
+
+    prompt_audit_summary = None
+    if audit_prompt_variants:
+        py_random_state = random.getstate()
+        try:
+            prompt_audit_summary = {
+                variant: eval_model(variant)
+                for variant in audit_prompt_variants
+            }
+        finally:
+            random.setstate(py_random_state)
+        print(f"[prompt audit] {json.dumps(prompt_audit_summary, indent=2)}")
 
     def teacher_collect(input_ids, attention_mask, lengths):
         state0, layer_mask, position_ids, position_embeddings = model.encode(input_ids, attention_mask)
@@ -2033,6 +2156,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
     return {
         "config": asdict(cfg),
         "eval": eval_summary,
+        "prompt_audit": prompt_audit_summary,
         "jumprec_eval": jump_summary,
         "direct_eval": direct_summary,
         "timing": timing_summary,
@@ -2081,6 +2205,8 @@ if __name__ == "__main__":
             "dry_strathop_polish2",
             "dry_strathop_eval",
             "dry_strathop_polish2_eval",
+            "dry_strathop_audit",
+            "dry_strathop_polish2_audit",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -2111,6 +2237,8 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_polish2_teacher",
             "core3_8n4h_strathop_eval_teacher",
             "core3_8n4h_strathop_polish2_eval_teacher",
+            "core3_8n4h_strathop_audit_teacher",
+            "core3_8n4h_strathop_polish2_audit_teacher",
             "core3_8n4h_strathop_jumprec",
             "core3_8n4h_strathop_gate_jumprec",
             "core3_8n4h_strathop_polish_jumprec",
@@ -2135,6 +2263,8 @@ if __name__ == "__main__":
         "dry_strathop_polish2",
         "dry_strathop_eval",
         "dry_strathop_polish2_eval",
+        "dry_strathop_audit",
+        "dry_strathop_polish2_audit",
         "dry_sweep",
         "dry_sweep_reuse",
     ):
