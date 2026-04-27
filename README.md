@@ -86,8 +86,11 @@ teacher-quality gate is now implemented: it tracks uniform validation by hop
 during teacher training and restores the best worst-hop checkpoint. On seed 42,
 the gate confirmed the issue rather than fixing it: the best checkpoint still
 only reached 88.1% worst-hop validation accuracy and 86.1% hop-4 final eval.
-The next credibility step is therefore a short late uniform or max-hop polish
-under the same gate, so seed 42 can be repaired without harming seeds 101/202.
+The first max-hop polish moved the right number but did not finish the repair:
+seed 42 improved to 98.21% full-loop accuracy and 94.82% hop-4 final eval, but
+the worst-hop validation gate still failed at 93.89%. The next credibility step
+is a lower-LR continuation with stronger final-loop pressure, then JumpRec only
+if the repaired teacher passes the gate.
 
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 
@@ -145,6 +148,7 @@ python run_recurrent_smol.py --local --mode dry_hardhop
 python run_recurrent_smol.py --local --mode dry_strathop
 python run_recurrent_smol.py --local --mode dry_strathop_gate
 python run_recurrent_smol.py --local --mode dry_strathop_polish
+python run_recurrent_smol.py --local --mode dry_strathop_polish2
 python run_recurrent_smol.py --local --mode dry_sweep
 python run_recurrent_smol.py --local --mode dry_sweep_reuse
 ```
@@ -165,9 +169,11 @@ modal run run_recurrent_smol.py --mode core3_8n4h_hardhop_jumprec
 modal run run_recurrent_smol.py --mode core3_8n4h_strathop_teacher
 modal run run_recurrent_smol.py --mode core3_8n4h_strathop_gate_teacher
 modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish_teacher
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_teacher
 modal run run_recurrent_smol.py --mode core3_8n4h_strathop_jumprec
 modal run run_recurrent_smol.py --mode core3_8n4h_strathop_gate_jumprec
 modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish_jumprec
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_jumprec
 ```
 
 ## Current Next Steps
@@ -176,8 +182,8 @@ modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish_jumprec
    headline, while keeping the synthetic-task caveat explicit.
 2. Add a teacher-quality gate for hard cases: validate uniformly by hop during
    training, save the best worst-hop checkpoint, and report the gate result.
-3. Test a blended teacher schedule for 8/4, likely stratified training followed
-   by a short uniform or max-hop polish, then rerun seed 42.
+3. Continue seed-42 polish from the current repaired checkpoint with lower
+   learning rates and stronger final-loop pressure.
 4. Run JumpRec only on teacher-gated checkpoints; avoid spending GPU on weak
    teachers unless the purpose is explicitly diagnostic.
 5. Begin staging paper-style result tables around three tiers: toy pointer

@@ -118,6 +118,7 @@ def config_for_mode(mode: str) -> Config:
         "dry_strathop",
         "dry_strathop_gate",
         "dry_strathop_polish",
+        "dry_strathop_polish2",
     ):
         cfg.use_fake_model = True
         cfg.d_model = 64
@@ -190,6 +191,29 @@ def config_for_mode(mode: str) -> Config:
             cfg.load_checkpoint_tag = "dry_strathop_gate_seed{seed}"
             cfg.save_checkpoints = True
             cfg.checkpoint_tag = "dry_strathop_polish_seed{seed}"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop_polish2":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 4
+            cfg.jump_steps = 0
+            cfg.direct_steps = 0
+            cfg.lr_blocks = 2e-5
+            cfg.lr_head = 1.5e-4
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 8.0
+            cfg.teacher_val_every = 2
+            cfg.teacher_val_batches = 1
+            cfg.teacher_gate_min_full = 0.5
+            cfg.teacher_gate_min_worst_hop = 0.25
+            cfg.load_checkpoints = True
+            cfg.resume_teacher_training = True
+            cfg.load_checkpoint_tag = "dry_strathop_polish_seed{seed}"
+            cfg.save_checkpoints = True
+            cfg.checkpoint_tag = "dry_strathop_polish2_seed{seed}"
             cfg.timing_batch_sizes = "1,2"
         elif mode == "dry_sweep":
             cfg.timing_batch_sizes = "1,2,4"
@@ -489,6 +513,33 @@ def config_for_mode(mode: str) -> Config:
         cfg.teacher_gate_min_worst_hop = 0.98
         cfg.eval_batches = 96
         cfg.log_every = 250
+    elif mode == "core3_8n4h_strathop_polish2_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 4000
+        cfg.lr_blocks = 2e-5
+        cfg.lr_head = 1.5e-4
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 8.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.resume_teacher_training = True
+        cfg.load_checkpoint_tag = "core3_8n4h_strathop_polish_seed{seed}"
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_polish2_seed{seed}"
+        cfg.teacher_val_every = 250
+        cfg.teacher_val_batches = 16
+        cfg.teacher_gate_min_full = 0.995
+        cfg.teacher_gate_min_worst_hop = 0.98
+        cfg.eval_batches = 96
+        cfg.log_every = 250
     elif mode == "core3_8n4h_strathop_jumprec":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -554,6 +605,29 @@ def config_for_mode(mode: str) -> Config:
         cfg.load_checkpoints = True
         cfg.save_checkpoints = True
         cfg.checkpoint_tag = "core3_8n4h_strathop_polish_seed{seed}"
+        cfg.timing_batches = 64
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_polish2_jumprec":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 8.0
+        cfg.jump_steps = 4500
+        cfg.direct_steps = 4500
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_polish2_seed{seed}"
         cfg.timing_batches = 64
         cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
         cfg.eval_batches = 96
@@ -1936,6 +2010,7 @@ if __name__ == "__main__":
             "dry_strathop",
             "dry_strathop_gate",
             "dry_strathop_polish",
+            "dry_strathop_polish2",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -1963,9 +2038,11 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_teacher",
             "core3_8n4h_strathop_gate_teacher",
             "core3_8n4h_strathop_polish_teacher",
+            "core3_8n4h_strathop_polish2_teacher",
             "core3_8n4h_strathop_jumprec",
             "core3_8n4h_strathop_gate_jumprec",
             "core3_8n4h_strathop_polish_jumprec",
+            "core3_8n4h_strathop_polish2_jumprec",
             "retrofit_8n4h_unfreeze",
             "retrofit_12n6h",
             "retrofit_unfreeze",
@@ -1983,6 +2060,7 @@ if __name__ == "__main__":
         "dry_strathop",
         "dry_strathop_gate",
         "dry_strathop_polish",
+        "dry_strathop_polish2",
         "dry_sweep",
         "dry_sweep_reuse",
     ):

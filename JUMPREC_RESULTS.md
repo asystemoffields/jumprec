@@ -1853,3 +1853,65 @@ The next teacher-side test should add a short late-stage polish after
 stratified training, probably uniform or max-hop-heavy, while keeping the same
 worst-hop validation gate. The goal is to preserve the seed-202/101 stratified
 fix while recovering seed-42 hop-4 accuracy.
+
+## 2026-04-26 - max-hop polish on stratified seed 42
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish_teacher --seed 42
+```
+
+Polish settings:
+
+| Setting | Value |
+|---|---:|
+| Loaded checkpoint | `core3_8n4h_strathop_gate_seed42` |
+| Extra recurrent steps | 3000 |
+| Max-hop sample probability | 70% |
+| Max-hop loss weight | 2.5 |
+| Final-loop loss weight | 4.0 |
+| Validation interval | 250 steps |
+| Validation batches | 16 |
+| Full-accuracy gate | 99.5% |
+| Worst-hop gate | 98.0% |
+
+Best validation checkpoint:
+
+| Step | Full Val Acc | Hop 1 | Hop 2 | Hop 3 | Hop 4 / Worst Hop | Gate Passed |
+|---:|---:|---:|---:|---:|---:|---|
+| 3000 | 97.66% | 100.00% | 99.59% | 97.35% | 93.89% | no |
+
+Final eval after restoring the best validation checkpoint:
+
+| Model | Full Acc | Hop 1 | Hop 2 | Hop 3 | Hop 4 |
+|---|---:|---:|---:|---:|---:|
+| Stratified gated teacher before polish | 96.32% | 100.00% | 100.00% | 99.03% | 86.10% |
+| After max-hop polish | 98.21% | 100.00% | 99.70% | 98.49% | 94.82% |
+
+Accuracy by loop after polish:
+
+| Loops | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| Accuracy | 15.43% | 40.90% | 58.69% | 78.06% | 98.55% | 98.45% | 98.21% |
+
+Timing sanity:
+
+| Batch Size | One Loop | Full Loop |
+|---:|---:|---:|
+| 64 | 11.70 ms | 33.86 ms |
+
+Interpretation:
+
+The first polish is useful but not a pass. It lifts the exact weak cell, seed-42
+hop 4, by 8.72 points on final eval and raises full-loop accuracy by 1.89
+points. That argues the failure is trainable rather than a hard architectural
+ceiling.
+
+The gate still fails, so this checkpoint should not be used for a headline
+JumpRec run. The loop profile also hints that part of the remaining problem is
+answer preservation: accuracy peaks at loop 4 and drifts down through loops 5
+and 6. The next test should continue from this checkpoint with gentler learning
+rates and a stronger final-loop loss, still under the worst-hop gate. If that
+passes, run JumpRec on the repaired checkpoint; if it does not, revisit the
+teacher objective rather than spending router compute.
