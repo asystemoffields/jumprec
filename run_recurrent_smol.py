@@ -119,6 +119,8 @@ def config_for_mode(mode: str) -> Config:
         "dry_strathop_gate",
         "dry_strathop_polish",
         "dry_strathop_polish2",
+        "dry_strathop_eval",
+        "dry_strathop_polish2_eval",
     ):
         cfg.use_fake_model = True
         cfg.d_model = 64
@@ -213,6 +215,34 @@ def config_for_mode(mode: str) -> Config:
             cfg.resume_teacher_training = True
             cfg.load_checkpoint_tag = "dry_strathop_polish_seed{seed}"
             cfg.save_checkpoints = True
+            cfg.checkpoint_tag = "dry_strathop_polish2_seed{seed}"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop_eval":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 0
+            cfg.jump_steps = 0
+            cfg.direct_steps = 0
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+            cfg.final_loop_loss_weight = 4.0
+            cfg.load_checkpoints = True
+            cfg.checkpoint_tag = "dry_strathop_gate_seed{seed}"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_strathop_polish2_eval":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 0
+            cfg.jump_steps = 0
+            cfg.direct_steps = 0
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 8.0
+            cfg.load_checkpoints = True
             cfg.checkpoint_tag = "dry_strathop_polish2_seed{seed}"
             cfg.timing_batch_sizes = "1,2"
         elif mode == "dry_sweep":
@@ -540,6 +570,44 @@ def config_for_mode(mode: str) -> Config:
         cfg.teacher_gate_min_worst_hop = 0.98
         cfg.eval_batches = 96
         cfg.log_every = 250
+    elif mode == "core3_8n4h_strathop_eval_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
+        cfg.eval_batches = 256
+        cfg.timing_batches = 16
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_strathop_polish2_eval_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 8.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_strathop_polish2_seed{seed}"
+        cfg.eval_batches = 256
+        cfg.timing_batches = 16
+        cfg.log_every = 500
     elif mode == "core3_8n4h_strathop_jumprec":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -2011,6 +2079,8 @@ if __name__ == "__main__":
             "dry_strathop_gate",
             "dry_strathop_polish",
             "dry_strathop_polish2",
+            "dry_strathop_eval",
+            "dry_strathop_polish2_eval",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -2039,6 +2109,8 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_gate_teacher",
             "core3_8n4h_strathop_polish_teacher",
             "core3_8n4h_strathop_polish2_teacher",
+            "core3_8n4h_strathop_eval_teacher",
+            "core3_8n4h_strathop_polish2_eval_teacher",
             "core3_8n4h_strathop_jumprec",
             "core3_8n4h_strathop_gate_jumprec",
             "core3_8n4h_strathop_polish_jumprec",
@@ -2061,6 +2133,8 @@ if __name__ == "__main__":
         "dry_strathop_gate",
         "dry_strathop_polish",
         "dry_strathop_polish2",
+        "dry_strathop_eval",
+        "dry_strathop_polish2_eval",
         "dry_sweep",
         "dry_sweep_reuse",
     ):
