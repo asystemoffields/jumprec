@@ -82,10 +82,12 @@ at batch size 64 across those two seeds. Agreement routing recovers teacher
 parity at about 99.77% mean accuracy, but costs more wall-clock.
 
 That makes the hard-case result real but still gated by teacher quality. The
-next credibility step is a teacher-quality gate: track uniform validation by
-hop during teacher training, save the best worst-hop checkpoint, and test a
-short late uniform or max-hop polish so seed 42 can be repaired without harming
-seeds 101/202.
+teacher-quality gate is now implemented: it tracks uniform validation by hop
+during teacher training and restores the best worst-hop checkpoint. On seed 42,
+the gate confirmed the issue rather than fixing it: the best checkpoint still
+only reached 88.1% worst-hop validation accuracy and 86.1% hop-4 final eval.
+The next credibility step is therefore a short late uniform or max-hop polish
+under the same gate, so seed 42 can be repaired without harming seeds 101/202.
 
 See `JUMPREC_RESULTS.md` for the experimental log and caveats.
 

@@ -1797,3 +1797,59 @@ track uniform validation by hop during teacher training, save the best
 worst-hop checkpoint, and test a blended schedule such as stratified training
 followed by a short uniform or max-hop polish. Once seed 42 can be repaired
 without harming seeds 101/202, rerun JumpRec on the gated checkpoints.
+
+## 2026-04-26 - worst-hop teacher gate on stratified seed 42
+
+Code changes:
+
+- Added `teacher_val_every`, `teacher_val_batches`,
+  `teacher_gate_min_full`, and `teacher_gate_min_worst_hop`.
+- Added `core3_8n4h_strathop_gate_teacher` and
+  `core3_8n4h_strathop_gate_jumprec` modes.
+- Teacher validation samples uniformly over hops, reports per-hop accuracy, and
+  saves/restores the checkpoint with the best worst-hop validation accuracy.
+- Validation preserves the Python RNG state so validation examples do not
+  perturb the subsequent training sequence.
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_gate_teacher --seed 42
+```
+
+Gate settings:
+
+| Setting | Value |
+|---|---:|
+| Validation interval | 500 recurrent steps |
+| Validation batches | 16 |
+| Full-accuracy gate | 99.5% |
+| Worst-hop gate | 98.0% |
+
+Best validation checkpoint:
+
+| Step | Full Val Acc | Hop 1 | Hop 2 | Hop 3 | Hop 4 / Worst Hop | Gate Passed |
+|---:|---:|---:|---:|---:|---:|---|
+| 10000 | 96.68% | 100.00% | 100.00% | 98.78% | 88.08% | no |
+
+Final uniform eval after restoring the best validation checkpoint:
+
+| Model | Full Acc | Hop 1 | Hop 2 | Hop 3 | Hop 4 |
+|---|---:|---:|---:|---:|---:|
+| Stratified gated teacher | 96.32% | 100.00% | 100.00% | 99.03% | 86.10% |
+| Direct control | 94.34% | 98.86% | 99.73% | 99.39% | 79.63% |
+
+Interpretation:
+
+The gate implementation works, but checkpoint selection alone does not repair
+seed 42. It confirms the failure mode instead: stratified training solves hops
+1-3 and leaves hop 4 far below the target. The restored best checkpoint is the
+final checkpoint, and the final eval matches the earlier ungated stratified
+seed-42 run, which is a useful sanity check that validation did not perturb the
+training stream.
+
+This changes the next experiment. We should not run JumpRec on this checkpoint.
+The next teacher-side test should add a short late-stage polish after
+stratified training, probably uniform or max-hop-heavy, while keeping the same
+worst-hop validation gate. The goal is to preserve the seed-202/101 stratified
+fix while recovering seed-42 hop-4 accuracy.
