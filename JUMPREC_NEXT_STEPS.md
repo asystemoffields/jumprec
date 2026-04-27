@@ -318,16 +318,143 @@ Before any strong paper claim:
 
 ## Suggested Next Run Order
 
-1. Add a cost-aware verifier/controller objective and test it on seed 101.
-2. Compare against current agreement routing, no-agreement routing, and oracle
-   routing on held-out validation/final splits.
-3. If controller quality/cost improves, confirm on seeds 42 and 202.
+1. Treat agreement routing as the robust quality reference and no-agreement
+   routing as the scalable candidate when verifier calibration is strong enough.
+2. Design the next router to close that gap: agreement-level quality with
+   no-agreement-like wall-clock behavior, especially on seed 42.
+3. If revisiting budget controllers, require richer deployment-time features or
+   policy-level training, not another `state0`-only exact-budget classifier.
 4. Run no-distill seeds 42/202 only as background table cleanup, not as a
    blocker.
-5. Add a wall-clock-focused controller benchmark for batch sizes 1, 2, 4, 8,
-   16, 32, and 64.
-6. Start a natural-language graph traversal bridge task.
-7. Only then move toward a general-use looped LLM artifact.
+5. Start a natural-language graph traversal bridge task.
+6. Only then move toward a general-use looped LLM artifact.
+
+Update from the first controller pass: cost-weighted scalar-verifier training
+and a small calibrated ranking-only variant were both tested on seed 101. They
+did not beat the existing held-out verifier baseline. See `JUMPREC_RESULTS.md`
+for the 2026-04-26 controller-objective entry.
+
+Update from the first separate budget-controller pass: the one-shot budget
+controller learned useful budget signal from `state0`, but underprediction
+caused verifier rejection followed by full-loop fallback, so counted core
+layers worsened versus the baseline scan policies. Do not replicate that exact
+variant before trying asymmetric/ordinal budget training or one-step escalation.
+
+Update from the follow-up controller-policy sweep: one-step escalation,
+verifier-aware budget targets, scan-up-from-prediction, open-loop routing, and
+per-budget threshold searches were all tested on seed 101. None beat the
+calibrated global-threshold serial verifier scan on robust quality/cost.
+Verifier-aware targets improved controller diagnostics, but deployable
+controller policies still spent more counted compute or lost too much accuracy.
+Per-budget thresholds overfit validation, even with a monotone constraint.
+Treat `state0`-only budget control as a diagnostic branch for now.
+
+Update from cross-seed timing hygiene: verifier-audit modes now time
+no-agree 0.99 and agreement 0.50 in the batch-size sweep. Seed 202 supports
+the no-agreement wall-clock story, but seed 42 needs no-agree threshold 0.99
+to stay near teacher quality, which hurts both counted compute and batch-64
+wall-clock. Agreement is still the robust quality reference, but not the
+scalable implementation target.
+
+Update from learned stability routing: a post-hoc stability head can predict
+adjacent-budget agreement with high precision and can be timed without running
+the adjacent budget. That is encouraging, but the deployed threshold policies
+did not beat true agreement and regressed badly on seed 42. Treat stability as
+a useful feature or supervision source, not as a standalone second gate.
+
+Literature orientation for the router problem:
+
+- ACT, Universal Transformers, and PonderNet all point to the same big idea:
+  adaptive compute needs an explicit learned halting mechanism, not just a
+  faster core. Useful anchors:
+  `https://arxiv.org/abs/1603.08983`, `https://arxiv.org/abs/1807.03819`,
+  and `https://arxiv.org/abs/2107.05407`.
+- DeeBERT, FastBERT, Depth-Adaptive Transformer, CALM, and CATs show that
+  early-exit systems live or die by calibration and the stop rule. CALM is a
+  particularly relevant language-model anchor: `https://arxiv.org/abs/2207.07061`.
+- PABEE is especially close to our agreement router: it waits for intermediate
+  predictions to remain stable, and frames that as preventing overthinking.
+- LayerSkip and speculative decoding suggest a scale path where early answers
+  are verified/corrected by later compute, but the best results come from
+  training the model for early exits rather than adding a router afterward.
+  LayerSkip: `https://arxiv.org/abs/2404.16710`.
+- Mixture-of-Depths is a useful scaling warning: dynamic compute is much easier
+  to make fast when the total tensor shapes are predictable and batch-friendly.
+  Mixture-of-Depths: `https://arxiv.org/abs/2404.02258`.
+- SkipDecode is another scaling warning for autoregressive LLMs: batching and
+  KV-cache compatibility matter as much as the abstract early-exit objective.
+  `https://arxiv.org/abs/2307.02628`.
+
+Design implication: the next serious router should be a unified halting/verifier
+trained against deployment utility. It can use verifier confidence, margin,
+max-prob, budget id, and predicted stability, but the loss and selection rule
+should optimize correctness versus cost directly instead of chaining separate
+thresholds.
+
+Update from utility and next-agreement probes: the post-hoc learned router
+family has now been pushed through three variants on seed 101: utility loss,
+utility plus predicted stability, and a next-budget agreement proxy. None
+closed the gap. The utility policies behave like slightly different
+no-agreement gates, while the next-agreement proxy only works at either very
+low coverage or poor quality/cost tradeoffs. The next router should therefore
+stop being a frozen-head add-on and become part of JumpRec training itself:
+train candidate logits, verifier/halting, and optional stability supervision
+together against the actual accept/fallback utility.
+
+Update from the first joint-halting probe: `core3_8n4h_strathop_joint_halt`
+has been implemented and dry-validated. On seed 101, joint training moved the
+utility route from the previous post-hoc result of 99.57% at 2.34 / 18 core
+layers to 99.84% at 2.24 / 18 core layers. True agreement still wins slightly
+at 99.90% and 2.20 / 18, but joint utility now lands in the right neighborhood
+while keeping the one-candidate utility timing path. Cross-seed confirmation is
+currently the gate: run or inspect seed 202 and repaired polish2 seed 42 before
+promoting this to the main result.
+
+Update from the joint-halting cross-seed check: seed 42 and seed 202 both
+confirm the broad direction. Mean final accuracy over seeds 101/42/202 is
+99.60% for the full teacher, 99.34% for no-agreement, 99.74% for true
+agreement, and 99.63% for joint utility. Mean counted core layers are 18.00,
+2.79, 2.73, and 2.87 respectively. This makes joint utility a real
+teacher-level one-candidate route, but not yet a replacement for agreement.
+Selected-threshold timing was patched to include agreement 0.10 and utility
+0.10; use the reuse runs as timing-only evidence because they skip the training
+stream. The next active probe is `core3_8n4h_strathop_joint_halt_stability`,
+which trains a stability head jointly and feeds its logit into the utility head.
+
+Update from the first stability-augmented joint-halting probe: seed 101 improves
+again. The stability-fed utility route reaches 99.89% final accuracy at 2.26 /
+18 counted core layers, versus 99.91% at 2.20 / 18 for true agreement and
+99.84% at 2.24 / 18 for plain joint utility on the same seed. Batch-1 timing is
+also where it should be directionally: 9.76 ms for utility 0.10, 17.19 ms for
+agreement 0.10, and 26.06 ms for the full teacher. This is the closest
+one-candidate router has come to the agreement frontier so far, so the active
+gate is now cross-seed stability confirmation on repaired polish2 seed 42 and
+seed 202.
+
+Update from the stability-augmented cross-seed check: the seed-101 gain is real
+but not general enough to promote stability-fed utility as the new headline.
+Mean stability-utility accuracy over seeds 101/42/202 is 99.63% at 2.87 / 18
+counted core layers, essentially tied with plain joint utility after rounding.
+It improves seed 101, barely moves seed 202, and slightly regresses repaired
+seed 42. Agreement remains the quality/cost reference at 99.74% and 2.72 / 18,
+while utility remains the deployment-shape reference because it avoids the
+adjacent-budget pass. The useful next idea is not another standalone router
+head; it is quality-targeted selection/calibration for the joint utility policy,
+plus full threshold-curve analysis. The runner now records held-out
+`val_policies` and `final_policies` curves for future runs.
+
+Update from the full-curve and high-validation selector audits: the bottleneck
+is now split. Calibration/selection can produce a teacher-level one-candidate
+utility route, but it does not close the agreement frontier. With 256 validation
+batches, 256 final batches, and a finer threshold grid, plain joint utility
+reaches 99.57% at 2.86 / 18 counted core layers under a teacher-floor selector
+and 99.69% at 3.07 / 18 under a teacher-plus-0.2pp selector. Stability-fed
+utility is similar: 99.58% at 2.90 / 18 and 99.68% at 2.97 / 18. Agreement is
+still better: about 99.74-99.76% at roughly 2.71-2.79 / 18 across the same
+selector scenarios. So the answer is: calibration solves the teacher-floor
+deployment-SLO bottleneck, but not the best-quality bottleneck. The next model
+work should target the joint objective so the one-candidate utility score learns
+the agreement frontier rather than merely exposing a stricter fallback knob.
 
 ## Useful Commands
 
@@ -389,3 +516,22 @@ The next phase should be ruthless but constructive:
 2. Preserve agreement-router quality while reducing overhead.
 3. Tie compute savings to wall-clock in the intended local-inference regime.
 4. Bridge from synthetic pointer chasing to natural-language reasoning tasks.
+
+Immediate router pivot:
+
+1. Treat joint halting as the active router branch.
+2. Treat stability as optional auxiliary supervision, not a promoted standalone
+   route, until it shows a larger cross-seed gain.
+3. Use the high-validation teacher-floor selector when the target is a
+   deployable teacher-level route.
+4. Do not expect selector calibration alone to reach agreement-level quality;
+   the next serious improvement is a joint-objective sweep.
+5. Use agreement labels as auxiliary supervision, but select by route utility:
+   correctness, false-accept cost, full fallback cost, and counted/wall-clock
+   proxy cost.
+6. Keep true agreement as the quality reference and no-agreement as the speed
+   reference; the new mode only matters if it lands between them in the right
+   direction.
+7. If seed 42 or 202 fail, inspect whether the failure is candidate degradation,
+   over-acceptance, fallback overuse, or utility calibration before adding a new
+   mechanism.

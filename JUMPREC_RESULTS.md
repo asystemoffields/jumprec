@@ -2386,3 +2386,761 @@ loss is load-bearing for adaptive savings, while the temporary adapter is not.
 This should not be overgeneralized to harder task regimes; older 12-node/6-hop
 toy-runner evidence still suggests the adapter can matter when the correction
 budget is tighter.
+
+## 2026-04-26 - seed-101 controller objective first pass
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_cost_controller --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_calib_controller --seed 101
+```
+
+Commit/worktree note: this was run from a local worktree adding two controller
+variants. `cost_controller` adds false-accept weighting, positive weighting for
+cheaper correct budgets, and a first-good ranking loss. `calib_controller`
+keeps the correctness BCE unweighted and adds only a small ranking loss against
+earlier wrong budgets.
+
+Held-out threshold audit on seed 101:
+
+| Mode | Policy | Selected Threshold | Final Teacher | Final Router | Avg Core Layers | Savings | Accepted Precision | ECE-10 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Baseline verifier | No agreement | 0.90 | 99.69% | 99.48% | 2.37 / 18 | 86.83% | 99.50% | 0.0038 |
+| Baseline verifier | Agreement | 0.50 | 99.69% | 99.79% | 2.33 / 18 | 87.07% | 99.80% | 0.0038 |
+| Cost-weighted controller | No agreement | 0.97 | 99.66% | 99.38% | 3.41 / 18 | 81.06% | 99.60% | 0.0305 |
+| Cost-weighted controller | Agreement | 0.50 | 99.66% | 99.66% | 2.32 / 18 | 87.11% | 99.68% | 0.0305 |
+| Calibrated ranking controller | No agreement | 0.97 | 99.66% | 99.38% | 2.60 / 18 | 85.53% | 99.50% | 0.0094 |
+| Calibrated ranking controller | Agreement | 0.50 | 99.66% | 99.61% | 2.33 / 18 | 87.04% | 99.66% | 0.0094 |
+
+Fixed-budget JumpRec still learned in both variants. For the calibrated
+ranking controller, c0/c1/c2/c3 were 71.35%, 96.08%, 99.46%, and 99.67%.
+
+Interpretation:
+
+This first controller-objective pass is diagnostic, not an improvement. The
+cost-weighted objective pushed the scalar verifier away from well-calibrated
+correctness estimates. The held-out selector responded by raising the
+no-agreement threshold to 0.97, which preserved accepted precision but spent
+more compute and lost accuracy versus the baseline verifier. The calibrated
+ranking-only variant was less damaging to calibration and recovered most of the
+compute profile, but still did not beat the baseline on seed 101.
+
+The lesson is that the existing scalar verifier is already strong on this seed,
+and simply reshaping its BCE objective is probably not the main path to the
+oracle-router gap. The next controller attempt should be a distinct budget
+controller trained on oracle-router traces, or another architecture that
+predicts the first sufficient budget while keeping the correctness verifier
+calibrated for fallback decisions.
+
+## 2026-04-26 - seed-101 separate budget controller
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_budget_controller --seed 101
+```
+
+This mode loads the existing seed-101 stratified teacher plus baseline JumpRec
+checkpoint, freezes the teacher/JumpRec/verifiers, and trains only a small
+budget controller from deployment-time `state0` features. The budget label is
+the first JumpRec correction budget whose prediction is correct, or fallback if
+no JumpRec budget is correct. At inference, the controller selects one budget;
+the existing calibrated verifier accepts that proposed path or falls back to
+the full recurrent teacher.
+
+Held-out threshold audit:
+
+| Policy | Selected Threshold | Final Teacher | Final Router | Avg Core Layers | Savings | Coverage | Accepted Precision |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| No agreement scan | 0.90 | 99.76% | 99.57% | 2.32 / 18 | 87.10% | - | - |
+| Agreement scan | 0.50 | 99.76% | 99.82% | 2.30 / 18 | 87.23% | - | - |
+| Budget controller | 0.85 | 99.76% | 99.55% | 4.23 / 18 | 76.48% | 87.00% | 99.69% |
+
+Budget-controller diagnostics:
+
+| Metric | Value |
+|---|---:|
+| Budget target accuracy | 76.73% |
+| Predicted fallback rate | 0.00% |
+| Target fallback rate | 0.06% |
+| Avg predicted tail loops | 0.37 |
+| Avg target tail loops | 0.34 |
+| Oracle router avg core layers | 2.02 / 18 |
+| Verifier ECE-10 | 0.0064 |
+
+Timing highlights:
+
+| Batch Size | Full Teacher | Serial No-Agree 0.90 | Budget 0.90 | Agreement 0.80 |
+|---:|---:|---:|---:|---:|
+| 1 | 18.61 ms | 6.28 ms | 6.32 ms | 11.53 ms |
+| 64 | 33.83 ms | 23.01 ms | 24.97 ms | 39.64 ms |
+
+Interpretation:
+
+The separate budget controller is architecturally cleaner than reshaping the
+verifier, but this first version is not an improvement. It preserves verifier
+calibration and avoids agreement-scan overhead, but the one-shot policy has a
+bad failure mode: if it predicts an early budget that the verifier rejects, it
+falls directly to the full loop instead of trying the next likely sufficient
+budget. That raises counted core layers to 4.23 / 18, behind the baseline scan
+policies at about 2.3 / 18.
+
+The controller did learn a meaningful target: predicted average tail loops
+0.37 versus target 0.34, with 76.7% exact budget accuracy. The problem is not
+that `state0` contains no budget signal. The problem is that exact first-budget
+classification is too brittle for a one-shot router; underprediction is much
+more expensive than overprediction because rejection goes to full fallback.
+
+Next budget-controller variant should either:
+
+- train with an asymmetric ordinal loss that penalizes underestimating the
+  needed budget more than overestimating it; or
+- allow one cheap escalation from predicted budget to predicted budget + 1
+  before full fallback, and count that as a distinct deployable policy.
+
+Do not seed-confirm this exact budget-controller variant unless it is needed as
+a negative baseline.
+
+## 2026-04-27 - seed-101 controller policy sweep
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_budget_controller_reuse --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_budget_verifytarget --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_budget_verifytarget_reuse --seed 101
+```
+
+This pass tested three follow-ups to the first budget-controller result:
+
+- one-step escalation from predicted budget to predicted budget + 1 before full fallback;
+- verifier-aware budget targets, where the controller predicts the first budget
+  that is both correct and acceptable to the existing verifier gate;
+- per-budget verifier thresholds, including a monotone conservative variant.
+
+Held-out final results on seed 101:
+
+| Variant | Policy | Selected Threshold(s) | Final Router | Avg Core Layers | Coverage | Accepted Precision |
+|---|---|---:|---:|---:|---:|---:|
+| Baseline verifier | No agreement scan | 0.90 | 99.48% | 2.37 / 18 | 99.93% | 99.50% |
+| Baseline verifier | Agreement scan | 0.50 | 99.79% | 2.33 / 18 | 99.87% | 99.80% |
+| First-correct controller | One-shot budget | 0.90 | 99.48% | 4.26 / 18 | 86.94% | 99.65% |
+| First-correct controller | One-step escalation | 0.97 | 99.68% | 2.84 / 18 | 98.11% | 99.78% |
+| First-correct controller | Open-loop budget | n/a | 90.88% | 2.14 / 18 | 100.00% | 90.88% |
+| First-correct controller | Scan upward from prediction | 0.90 | 99.46% | 2.58 / 18 | 99.93% | 99.49% |
+| Verifier-target controller | One-shot budget | 0.97 | 99.62% | 3.46 / 18 | 92.96% | 99.74% |
+| Verifier-target controller | One-step escalation | 0.97 | 99.67% | 2.75 / 18 | 99.80% | 99.74% |
+| Verifier-target controller | Open-loop budget | n/a | 97.66% | 2.50 / 18 | 100.00% | 97.66% |
+| Verifier-target controller | Scan upward from prediction | 0.90 | 99.46% | 2.65 / 18 | 99.93% | 99.49% |
+| Per-budget thresholds | Unconstrained no-agree | 0.5,0.9,0.85,0.5 | 99.27% | 2.35 / 18 | 99.99% | 99.28% |
+| Per-budget thresholds | Monotone no-agree | 0.9,0.9,0.6,0.5 | 99.43% | 2.36 / 18 | 99.99% | 99.44% |
+
+Budget-controller diagnostics:
+
+| Controller Target | Exact Target Acc | Under Rate | Over Rate | Avg Pred Tail | Avg Target Tail |
+|---|---:|---:|---:|---:|---:|
+| First correct | 76.65% | 9.40% | 13.95% | 0.37 | 0.34 |
+| First verifier-acceptable | 85.28% | 4.94% | 9.78% | 0.50 | 0.46 |
+
+Interpretation:
+
+The state0 budget controller is learning real routing signal, and the
+verifier-aware target is clearly better as a supervised objective than "first
+correct." However, the deployable policies still do not beat the simple
+calibrated serial verifier scan. Open-loop budget routing is too inaccurate.
+One-step escalation and scan-up recover quality but spend more counted compute
+than the global-threshold serial scan. Per-budget thresholds looked attractive
+on the validation split but overfit: the unconstrained search chose an unsafe
+low budget-0 threshold, and the monotone constrained search still lost final
+accuracy for only a tiny cost gain.
+
+On seed 101, the current best wall-clock-oriented deployable policy remains the
+calibrated no-agreement serial verifier at threshold 0.90, with agreement
+routing retained as the higher-quality diagnostic/scientific policy. The
+budget-controller work should be treated as a negative/diagnostic branch unless
+a later architecture can use richer deployment-time features than `state0`
+alone or train the verifier/controller jointly against the actual routing
+policy. Cross-seed timing below makes the broader scaling story more nuanced.
+
+## 2026-04-27 - cross-seed verifier timing hygiene
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_verifier_audit --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_verifier_audit --seed 202
+```
+
+This reran the verifier audit modes after adding batch-size timing for the
+actually selected families: no-agree threshold 0.99 and agreement threshold
+0.50. This matters because the earlier timing only included agreement 0.80 and
+no-agree up to 0.95.
+
+Held-out final routing:
+
+| Seed | Policy | Selected Threshold | Final Teacher | Final Router | Avg Core Layers | Savings | Accepted Precision |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 42 | No agreement | 0.99 | 99.49% | 99.32% | 6.01 / 18 | 66.64% | 99.65% |
+| 42 | Agreement | 0.50 | 99.49% | 99.30% | 3.09 / 18 | 82.85% | 99.39% |
+| 202 | No agreement | 0.80 | 99.60% | 99.01% | 3.28 / 18 | 81.80% | 99.05% |
+| 202 | Agreement | 0.50 | 99.60% | 99.66% | 3.24 / 18 | 81.99% | 99.69% |
+
+Wall-clock timing highlights:
+
+| Seed | Batch | Full Teacher | No-Agree Selected-ish | Agreement 0.50 |
+|---:|---:|---:|---:|---:|
+| 42 | 1 | 26.39 ms | 20.16 ms at 0.99 | 25.85 ms |
+| 42 | 64 | 34.97 ms | 46.14 ms at 0.99 | 57.16 ms |
+| 202 | 1 | 20.43 ms | 7.58 ms at 0.80 | 18.38 ms |
+| 202 | 64 | 33.80 ms | 25.05 ms at 0.80 | 44.82 ms |
+
+Interpretation:
+
+The scaling story is more nuanced than "no-agree is the keeper." On seed 202,
+no-agreement routing is the clear wall-clock path but loses more accuracy than
+agreement. On seed 42, held-out selection must push no-agreement to threshold
+0.99 to stay near teacher quality; that makes counted compute and batch-64
+wall-clock much worse. Agreement remains the most robust quality-preserving
+policy across seeds, but its current implementation has poor wall-clock scaling
+because it evaluates adjacent budgets.
+
+The practical keeper is therefore split:
+
+- agreement routing is the robust scientific quality reference;
+- no-agreement routing is the scalable candidate when calibration is strong
+  enough for the seed/task regime;
+- the unsolved target is still a quality-preserving router with no-agreement-like
+  wall-clock behavior.
+
+The negative budget-controller results narrow the search: the next router
+should not be another `state0`-only exact-budget classifier. It should either
+improve the verifier features available after each cheap candidate, train
+against the actual accept/fallback policy, or change the execution path so
+agreement-style stability can be checked without a second full budget pass.
+
+## 2026-04-27 - learned stability router
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_stability_router --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_stability_router --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_stability_router --seed 202
+```
+
+This pass tested a cheap learned approximation to adjacent-budget agreement.
+Each JumpRec correction budget gets a frozen-post-hoc stability head. The head
+sees the same deployment-time verifier features for the current candidate and
+is trained to predict whether the current candidate prediction matches the next
+correction budget prediction. At inference, the `stable_*` policies require the
+normal verifier gate plus predicted stability, but do not execute the adjacent
+budget to check agreement.
+
+Stability-head training telemetry at step 2000:
+
+| Seed | Mode | Stability Acc | Pred Stable | Target Stable | Pred-Stable Precision |
+|---:|---|---:|---:|---:|---:|
+| 101 | `strathop_stability_router` | 96.5% | 59.4% | 61.3% | 98.7% |
+| 42 | `strathop_polish2_stability_router` | 93.0% | 53.5% | 55.1% | 94.9% |
+| 202 | `strathop_stability_router` | 94.1% | 54.7% | 57.4% | 97.1% |
+
+Held-out final routing:
+
+| Seed | Policy | Selected Gate | Final Teacher | Final Router | Avg Core Layers | Savings | Coverage | Accepted Precision |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 101 | No agreement | verifier 0.90 | 99.76% | 99.57% | 2.32 / 18 | 87.10% | 99.99% | 99.57% |
+| 101 | Agreement | verifier 0.50 | 99.76% | 99.82% | 2.30 / 18 | 87.23% | 99.85% | 99.83% |
+| 101 | Stable 0.50/0.70 | verifier 0.95 | 99.76% | 99.69% | 2.38 / 18 | 86.79% | 99.72% | 99.76% |
+| 42 | No agreement | verifier 0.99 | 99.40% | 99.23% | 6.00 / 18 | 66.64% | 97.14% | 99.62% |
+| 42 | Agreement | verifier 0.50 | 99.40% | 99.29% | 3.09 / 18 | 82.85% | 99.30% | 99.34% |
+| 42 | Stable 0.50/0.70/0.90 | verifier 0.99 | 99.40% | 99.19% | 7.78 / 18 | 56.80% | 75.00% | 99.66% |
+| 202 | No agreement | verifier 0.90 | 99.65% | 99.27% | 3.36 / 18 | 81.35% | 99.94% | 99.27% |
+| 202 | Agreement | verifier 0.50 | 99.65% | 99.66% | 3.27 / 18 | 81.85% | 99.63% | 99.67% |
+| 202 | Stable 0.70 | verifier 0.95 | 99.65% | 99.45% | 3.49 / 18 | 80.62% | 99.27% | 99.48% |
+
+Batch-64 wall-clock timing highlights:
+
+| Seed | Full Teacher | No-Agree Selected | Agreement 0.50 | Stable Timing Highlight |
+|---:|---:|---:|---:|---:|
+| 101 | 35.01 ms | 26.54 ms at 0.90 | 43.57 ms | 27.27 ms for stable0.50/verifier0.90 |
+| 42 | 34.19 ms | 44.97 ms at 0.99 | 55.37 ms | 30.62 ms for stable0.50/verifier0.80 |
+| 202 | 43.28 ms | 37.42 ms at 0.90 | 50.76 ms | 31.85 ms for stable0.70/verifier0.90 |
+
+Interpretation:
+
+The learned stability signal is real: the heads learn adjacent-budget agreement
+with high predicted-stable precision, and the stable timing path can be close to
+no-agreement latency because it avoids the second budget pass. However, as a
+deployable router it is not good enough yet. On seed 101 it lands between
+no-agreement and true agreement. On seed 202, stable 0.70 improves over
+no-agreement quality but still trails agreement while spending more counted
+compute. On seed 42, the learned stability gate is a regression: validation
+selection drives it to verifier 0.99, coverage collapses to 75%, and average
+core layers rise to 7.78 / 18.
+
+Conclusion:
+
+Learned stability is a useful diagnostic and a promising feature, but not a
+standalone gate. The next router should not simply stack verifier confidence and
+stability as independent thresholds. Better next bets are:
+
+- feed predicted stability into a unified verifier/halting head;
+- train the halting decision against actual route utility, including false
+  accepts, fallbacks, and counted cost;
+- use agreement-style labels as supervision, but calibrate the deployed policy
+  for correctness and wall-clock, not just adjacent-budget consistency.
+
+## 2026-04-27 - utility and next-agreement router probes
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_utility_router --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_utility_stability_router --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_nextagree_router --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_nextagree_router_reuse --seed 101
+```
+
+This pass tested two post-hoc learned alternatives to the hand-built router:
+
+- a utility router trained with a differentiable expected route loss over
+  accept/fallback outcomes, false accepts, and counted core cost;
+- a next-agreement proxy head trained to predict the next correction budget's
+  predicted class from the current budget features, then accept when that
+  predicted next class matches the current class.
+
+Seed-101 held-out final results:
+
+| Variant | Policy | Selected Gate | Final Router | Avg Core Layers | Coverage | Accepted Precision |
+|---|---|---:|---:|---:|---:|---:|
+| Utility only | No agreement | verifier 0.90 | 99.57% | 2.32 / 18 | 99.99% | 99.57% |
+| Utility only | Agreement | verifier 0.10 | 99.78% | 2.26 / 18 | 99.89% | 99.78% |
+| Utility only | Utility | utility 0.20 | 99.57% | 2.34 / 18 | 99.83% | 99.63% |
+| Utility + stability feature | Stable 0.70 | verifier 0.95 | 99.69% | 2.38 / 18 | 99.72% | 99.76% |
+| Utility + stability feature | Utility | utility 0.10 | 99.55% | 2.32 / 18 | 99.91% | 99.58% |
+| Next-agreement proxy | Nextagree 0.50 | verifier 0.10 | 99.76% | 17.90 / 18 | 0.95% | 100.00% |
+
+The utility router did not improve the Pareto frontier. It learned a plausible
+accept policy, but it landed near the no-agreement verifier rather than the
+agreement router. Feeding the learned stability logit into the utility router
+also did not help; it slightly worsened the utility policy and still trailed the
+true agreement reference.
+
+The next-agreement proxy initially looked over-conservative because its learned
+next-class confidence was low. A reuse audit expanded the proxy confidence grid
+downward:
+
+| Next-Agreement Confidence | Final Router | Avg Core Layers | Coverage | Accepted Precision |
+|---:|---:|---:|---:|---:|
+| 0.00 / 0.10 | 99.43% | 13.29 / 18 | 32.80% | 99.00% |
+| 0.15 | 99.49% | 14.19 / 18 | 28.50% | 99.06% |
+| 0.20 | 99.60% | 15.44 / 18 | 20.85% | 99.24% |
+| 0.30 | 99.68% | 17.19 / 18 | 7.30% | 99.33% |
+| 0.50 | 99.69% | 17.89 / 18 | 0.99% | 100.00% |
+
+Lowering the next-agreement confidence threshold recovers coverage, but only by
+accepting too many weak candidates and spending most of the full compute anyway.
+Keeping the threshold high preserves quality, but falls back almost always. That
+makes the proxy useful diagnostically, not deployable.
+
+Timing highlights:
+
+| Run | Batch | Full Teacher | No-Agree 0.90 | Agreement 0.50 | Learned Router Highlight |
+|---|---:|---:|---:|---:|---:|
+| Utility only | 64 | 33.92 ms | 22.77 ms | 41.96 ms | Utility 0.50: 29.07 ms |
+| Utility + stability | 64 | 34.43 ms | 23.75 ms | 45.10 ms | Utility 0.50: 25.94 ms |
+| Nextagree high-conf | 64 | 33.97 ms | 23.53 ms | 41.72 ms | Nextagree 0.50/0.90: 39.97 ms |
+| Nextagree low-conf reuse | 64 | 45.57 ms | 37.84 ms | 65.60 ms | Nextagree 0.00/0.90: 55.41 ms |
+
+Do not over-read cross-run timing deltas because Modal performance varied, but
+the direction is enough: none of the learned post-hoc routers combines
+agreement-level quality with no-agreement-like wall-clock behavior.
+
+One positive incidental finding: widening the verifier threshold grid let true
+agreement select verifier threshold 0.10 on seed 101, improving the counted
+quality/cost point to about 99.78% at 2.26 / 18 core layers. This reinforces
+that adjacent-budget stability is a strong signal. The failure is not the
+stability idea; the failure is trying to approximate it after the fact with
+small frozen heads and independent thresholds.
+
+Conclusion:
+
+Treat utility, utility-plus-stability, and next-agreement proxy routing as
+negative post-hoc branches. The next serious attempt should move the halting
+signal into training, closer to early-exit / LayerSkip / PonderNet style
+supervision: train the candidate predictor and halting/verifier together for
+deployment utility, rather than freezing JumpRec and learning another small
+gate afterward.
+
+## 2026-04-27 - joint halting seed-101 probe
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt --seed 101
+```
+
+This mode loads the existing seed-101 stratified teacher plus baseline JumpRec
+checkpoint, then unfreezes the JumpRec candidate path, verifier features, and
+utility halting head together. The joint loss combines:
+
+- differentiable expected route utility over accept/fallback outcomes;
+- per-candidate cross-entropy to the task label;
+- distillation toward the full recurrent teacher;
+- verifier correctness BCE;
+- optional stability supervision when a stability head is enabled.
+
+This is the first router attempt that changes the candidates themselves instead
+of scoring a frozen JumpRec path after the fact.
+
+Joint-halt training telemetry:
+
+| Step | Loss | Route | CE | Distill | Verifier | Aux | Expected Wrong | Expected Core | 0.5-Gate Avg Core |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 500 | 0.3826 | 0.0609 | 0.3311 | 0.3308 | 0.1340 | 0.0269 | 0.0197 | 0.1815 | 3.02 |
+| 1000 | 0.3516 | 0.0711 | 0.2744 | 0.2724 | 0.1466 | 0.0328 | 0.0309 | 0.1432 | 2.41 |
+| 1500 | 0.3008 | 0.0381 | 0.2912 | 0.2917 | 0.0597 | 0.0092 | 0.0042 | 0.1528 | 2.59 |
+| 2000 | 0.3749 | 0.0456 | 0.3496 | 0.3495 | 0.1128 | 0.0209 | 0.0071 | 0.1659 | 2.97 |
+
+The training minibatch 0.5-gate metrics stayed at 100% accuracy/precision in
+these logs, but those are only online training diagnostics. The held-out router
+selection below is the relevant result.
+
+Held-out final routing:
+
+| Policy | Selected Gate | Final Teacher | Final Router | Avg Core Layers | Savings | Coverage | Accepted Precision |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| No agreement | verifier 0.70 | 99.76% | 99.68% | 2.21 / 18 | 87.71% | 99.98% | 99.68% |
+| Agreement | verifier 0.10 | 99.76% | 99.90% | 2.20 / 18 | 87.79% | 99.89% | 99.94% |
+| Joint utility | utility 0.10 | 99.76% | 99.84% | 2.24 / 18 | 87.55% | 99.96% | 99.85% |
+| Joint utility guarded | utility 0.10 | 99.76% | 99.84% | 2.24 / 18 | 87.55% | 99.96% | 99.85% |
+
+The important movement is the utility policy. The previous post-hoc utility
+router on this seed selected utility 0.20 and landed at 99.57% final accuracy
+using 2.34 / 18 core layers. Joint halting moves the utility route to 99.84%
+while using 2.24 / 18 core layers. It still trails true agreement slightly, but
+it now sits much closer to the desired quality/cost frontier while preserving a
+one-candidate utility timing path.
+
+Timing highlights from the batch-size sweep:
+
+| Batch | Full Teacher | No-Agree 0.90 | Agreement 0.50 | Utility 0.50 | Utility 0.80 | Utility 0.90 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 41.70 ms | 12.04 ms | 29.16 ms | 13.32 ms | 13.28 ms | 15.36 ms |
+| 64 | 47.84 ms | 31.67 ms | 61.92 ms | 36.88 ms | 34.84 ms | 38.37 ms |
+
+Interpretation:
+
+This is a positive first probe. It supports the hypothesis from the post-hoc
+failures: the halting policy should be trained with the candidate path, not
+bolted onto a frozen JumpRec model. The current result is not seed-confirmed
+yet, and Modal timing varied enough that quality should be weighted more than
+single-run timing. The next credibility gate is cross-seed confirmation on seed
+202 and repaired polish2 seed 42. If those hold, joint halting becomes the main
+router path.
+
+## 2026-04-27 - joint halting cross-seed check
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt --seed 42
+```
+
+After the seed-101 run, the same joint-halting recipe was checked on seed 202
+and repaired polish2 seed 42. The quality result seed-confirms the direction,
+but with an important caveat: joint utility is now strong and often
+teacher-level, yet it still does not replace true agreement on quality.
+
+Held-out final routing from the training runs:
+
+| Seed | Policy | Selected Gate | Final Teacher | Final Router | Avg Core Layers | Savings | Coverage | Accepted Precision |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 101 | No agreement | verifier 0.70 | 99.76% | 99.68% | 2.21 / 18 | 87.71% | 99.98% | 99.68% |
+| 101 | Agreement | verifier 0.10 | 99.76% | 99.90% | 2.20 / 18 | 87.79% | 99.89% | 99.94% |
+| 101 | Joint utility | utility 0.10 | 99.76% | 99.84% | 2.24 / 18 | 87.55% | 99.96% | 99.85% |
+| 42 | No agreement | verifier 0.95 | 99.40% | 99.18% | 2.95 / 18 | 83.61% | 99.83% | 99.27% |
+| 42 | Agreement | verifier 0.10 | 99.40% | 99.52% | 2.89 / 18 | 83.95% | 99.88% | 99.56% |
+| 42 | Joint utility | utility 0.10 | 99.40% | 99.41% | 3.06 / 18 | 83.00% | 99.50% | 99.58% |
+| 202 | No agreement | verifier 0.85 | 99.65% | 99.17% | 3.20 / 18 | 82.25% | 99.79% | 99.22% |
+| 202 | Agreement | verifier 0.10 | 99.65% | 99.78% | 3.09 / 18 | 82.84% | 99.46% | 99.83% |
+| 202 | Joint utility | utility 0.10 | 99.65% | 99.62% | 3.31 / 18 | 81.63% | 99.71% | 99.69% |
+
+Mean over seeds:
+
+| Policy | Mean Router Acc | Mean Avg Core Layers | Mean Coverage | Mean Accepted Precision |
+|---|---:|---:|---:|---:|
+| Full teacher | 99.60% | 18.00 / 18 | - | - |
+| No agreement | 99.34% | 2.79 / 18 | 99.87% | 99.39% |
+| Agreement | 99.74% | 2.73 / 18 | 99.77% | 99.89% |
+| Joint utility | 99.63% | 2.87 / 18 | 99.72% | 99.71% |
+
+Interpretation:
+
+Joint halting is real, but the current utility head is not the final router.
+It lifted the learned utility policy from the post-hoc failure mode into the
+teacher-quality neighborhood, and it beats the mean full teacher by a small
+amount while using about 2.87 / 18 counted core layers. True agreement still
+wins the quality/cost table at 99.74% and 2.73 / 18. The architectural target is
+therefore sharper now: keep the joint-trained candidate improvements, then make
+the one-candidate utility head learn more of the agreement signal without
+running the adjacent budget.
+
+Selected-threshold timing audit:
+
+After the cross-seed runs, the timing harness was patched to include the actual
+selected gates: no-agree 0.70/0.85, agreement 0.10, and utility 0.10. Checkpoint
+reuse runs were then launched:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_reuse --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_reuse --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_reuse --seed 202
+```
+
+These reuse runs skip training, so their held-out quality streams differ from
+the training runs above. Use them as timing-only evidence.
+
+| Seed | Batch | Full Teacher | Agreement 0.10 | Utility 0.10 |
+|---:|---:|---:|---:|---:|
+| 101 | 1 | 74.73 ms | 32.85 ms | 20.06 ms |
+| 101 | 64 | 90.66 ms | 151.04 ms | 86.78 ms |
+| 42 | 1 | 26.97 ms | 22.96 ms | 10.13 ms |
+| 42 | 64 | 34.23 ms | 42.25 ms | 35.52 ms |
+| 202 | 1 | 25.08 ms | 18.20 ms | 10.26 ms |
+| 202 | 64 | 34.93 ms | 53.17 ms | 33.03 ms |
+
+Timing remains noisy, especially the seed-101 reuse run. The stable directional
+finding is still useful: selected agreement is expensive because it evaluates
+adjacent budgets, while selected utility keeps the intended one-candidate shape
+and is the plausible wall-clock path if its quality can be tightened.
+
+Next probe:
+
+Run a stability-augmented joint-halting variant where the stability head is
+trained jointly and its logit is fed into the utility head. Earlier post-hoc
+stability was not enough, but the cross-seed joint-halting result suggests
+agreement-style information may be more useful when it is part of the joint
+candidate/halting objective.
+
+## 2026-04-27 - stability-augmented joint halting seed-101 probe
+
+Command:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_stability --seed 101
+```
+
+This variant keeps the joint candidate/verifier/utility training loop, adds the
+stability head to the joint loss, and feeds the predicted stability logit into
+the utility router. The goal is to learn some of true agreement's safety signal
+without paying for an adjacent-budget candidate at inference.
+
+Held-out final routing:
+
+| Policy | Selected Gate | Final Teacher | Final Router | Avg Core Layers | Savings | Coverage | Accepted Precision |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| No agreement | verifier 0.50 | 99.76% | 99.62% | 2.20 / 18 | 87.75% | 99.98% | 99.63% |
+| Agreement | verifier 0.10 | 99.76% | 99.91% | 2.20 / 18 | 87.77% | 99.93% | 99.95% |
+| Stable 0.50 | stability 0.10 | 99.76% | 99.58% | 2.19 / 18 | 87.81% | 100.00% | 99.58% |
+| Stable 0.70 | stability 0.10 | 99.76% | 99.68% | 2.21 / 18 | 87.72% | 99.99% | 99.69% |
+| Stable 0.90 | stability 0.10 | 99.76% | 99.78% | 2.23 / 18 | 87.62% | 99.96% | 99.80% |
+| Joint stability utility | utility 0.10 | 99.76% | 99.89% | 2.26 / 18 | 87.47% | 99.91% | 99.93% |
+| Joint stability utility guarded | utility 0.10 | 99.76% | 99.89% | 2.26 / 18 | 87.47% | 99.91% | 99.93% |
+
+Compared with plain joint utility on seed 101, the stability-fed utility route
+improves final accuracy from 99.84% to 99.89%, while counted core rises only
+from 2.24 / 18 to 2.26 / 18. It remains just below true agreement on quality,
+but the gap is now about 0.024 percentage points on this seed and the router
+keeps the one-candidate inference shape.
+
+Selected timing from the batch-size sweep:
+
+| Batch | Full Teacher | Agreement 0.10 | Utility 0.10 | Stable 0.70/0.90 |
+|---:|---:|---:|---:|---:|
+| 1 | 26.06 ms | 17.19 ms | 9.76 ms | 10.30 ms |
+| 2 | 25.91 ms | 22.75 ms | 12.28 ms | 11.45 ms |
+| 4 | 26.39 ms | 27.92 ms | 14.59 ms | 14.00 ms |
+| 8 | 28.41 ms | 29.59 ms | 14.10 ms | 14.46 ms |
+| 16 | 27.24 ms | 36.27 ms | 18.55 ms | 18.26 ms |
+| 32 | 30.94 ms | 30.85 ms | 18.58 ms | 18.58 ms |
+| 64 | 34.62 ms | 41.33 ms | 23.79 ms | 24.07 ms |
+
+Interpretation:
+
+This is the best single-seed deployable router result so far. True agreement
+still defines the quality reference, but stability-fed joint utility nearly
+matches it while avoiding agreement's adjacent-budget pass. This is strong
+enough to justify cross-seed stability runs on repaired polish2 seed 42 and
+seed 202 before changing the router design again.
+
+## 2026-04-27 - stability-augmented joint halting cross-seed check
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_stability --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_stability --seed 202
+```
+
+The seed-101 improvement did not fully seed-confirm. Stability-fed utility is
+still viable, but it is a small average improvement rather than a new frontier.
+
+Held-out final routing from the stability runs:
+
+| Seed | Policy | Selected Gate | Final Teacher | Final Router | Avg Core Layers | Savings | Coverage | Accepted Precision |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 101 | No agreement | verifier 0.50 | 99.76% | 99.62% | 2.20 / 18 | 87.75% | 99.98% | 99.63% |
+| 101 | Agreement | verifier 0.10 | 99.76% | 99.91% | 2.20 / 18 | 87.77% | 99.93% | 99.95% |
+| 101 | Stability utility | utility 0.10 | 99.76% | 99.89% | 2.26 / 18 | 87.47% | 99.91% | 99.93% |
+| 42 | No agreement | verifier 0.99 | 99.40% | 99.23% | 2.99 / 18 | 83.38% | 99.78% | 99.34% |
+| 42 | Agreement | verifier 0.10 | 99.40% | 99.55% | 2.90 / 18 | 83.90% | 99.85% | 99.56% |
+| 42 | Stability utility | utility 0.10 | 99.40% | 99.38% | 3.05 / 18 | 83.05% | 99.63% | 99.50% |
+| 202 | No agreement | verifier 0.95 | 99.65% | 99.41% | 3.24 / 18 | 82.01% | 99.83% | 99.45% |
+| 202 | Agreement | verifier 0.10 | 99.65% | 99.74% | 3.06 / 18 | 82.98% | 99.63% | 99.79% |
+| 202 | Stability utility | utility 0.10 | 99.65% | 99.63% | 3.31 / 18 | 81.63% | 99.77% | 99.68% |
+
+Mean over seeds:
+
+| Policy | Mean Router Acc | Mean Avg Core Layers | Mean Coverage | Mean Accepted Precision |
+|---|---:|---:|---:|---:|
+| Full teacher | 99.60% | 18.00 / 18 | - | - |
+| No agreement | 99.42% | 2.81 / 18 | 99.86% | 99.47% |
+| Agreement | 99.74% | 2.72 / 18 | 99.80% | 99.77% |
+| Stability utility | 99.63% | 2.87 / 18 | 99.77% | 99.70% |
+
+Compared with plain joint utility, stability-fed utility changes the mean from
+99.63% at 2.87 / 18 to 99.63% at 2.87 / 18 after rounding. More precisely, it
+is about +0.008 percentage points in accuracy and +0.002 counted core layers.
+The benefit is concentrated on seed 101, tiny on seed 202, and negative on the
+repaired seed-42 branch. Treat the stability feature as useful auxiliary
+supervision, not as a decisive router improvement yet.
+
+Selected-threshold timing:
+
+| Seed | Batch | Full Teacher | Agreement 0.10 | Utility 0.10 |
+|---:|---:|---:|---:|---:|
+| 101 | 1 | 26.06 ms | 17.19 ms | 9.76 ms |
+| 101 | 64 | 34.62 ms | 41.33 ms | 23.79 ms |
+| 42 | 1 | 20.68 ms | 16.78 ms | 9.00 ms |
+| 42 | 64 | 33.60 ms | 37.99 ms | 30.32 ms |
+| 202 | 1 | 26.93 ms | 22.63 ms | 11.60 ms |
+| 202 | 64 | 35.20 ms | 49.74 ms | 33.67 ms |
+
+The one-candidate utility path remains the only plausible deployment-speed
+route. Agreement is still the best quality reference, but its adjacent-budget
+pass is a real wall-clock cost.
+
+Additional threshold observation:
+
+The fixed 0.80/0.90/0.95 evaluation points show that a stricter utility gate can
+buy more final accuracy at higher cost. For example, stability utility at 0.80
+lands at 99.88%, 99.54%, and 99.87% on seeds 101, 42, and 202 respectively, but
+uses more counted core than the selected 0.10 gate. This suggests the next
+router work should expose a quality/cost operating point rather than treating
+one selected threshold as the whole story.
+
+Instrumentation update:
+
+`run_recurrent_smol.py` now stores full validation and final threshold curves in
+the held-out audit as `val_policies` and `final_policies`, instead of recording
+only the selected threshold. That should make future calibration and
+quality-SLO analysis much less lossy. It also records `selected_by_drop`
+scenarios for the normal speed-biased selector, a tighter 0.1 percentage-point
+drop selector, a teacher-floor selector, and teacher-plus selectors.
+
+## 2026-04-27 - full-curve calibration audit
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_reuse --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_reuse --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_reuse --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_stability_reuse --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_stability_reuse --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_stability_reuse --seed 202
+```
+
+These runs used the upgraded held-out audit to record complete validation and
+final threshold curves. The first finding is that the utility score is useful
+and mostly monotonic: stricter utility thresholds usually buy more final
+accuracy at higher fallback cost. The normal speed-biased selector still chooses
+the lowest threshold, because it optimizes minimal counted core inside the
+validation accuracy floor.
+
+Diagnostic final-curve examples for utility:
+
+| Variant | Seed | Teacher | Best Final Utility | Best Utility Core | Lowest Utility Core At Or Above Teacher |
+|---|---:|---:|---:|---:|---:|
+| Plain | 42 | 99.49% | 99.55% | 3.56 / 18 | 3.15 / 18 |
+| Plain | 101 | 99.69% | 99.83% | 2.35 / 18 | 2.29 / 18 |
+| Plain | 202 | 99.60% | 99.83% | 4.10 / 18 | 3.26 / 18 |
+| Stability | 42 | 99.49% | 99.54% | 3.40 / 18 | 3.29 / 18 |
+| Stability | 101 | 99.69% | 99.85% | 2.35 / 18 | 2.31 / 18 |
+| Stability | 202 | 99.60% | 99.84% | 3.65 / 18 | 3.28 / 18 |
+
+This shows the bottleneck is not that utility lacks a usable ranking signal.
+It has a quality/cost curve. The problem is that the selected speed point is not
+the same thing as a production quality point, and agreement still gets better
+quality for less counted core.
+
+## 2026-04-27 - high-validation selector audit
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_reuse_highval --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_reuse_highval --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_stability_reuse_highval --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_stability_reuse_highval --seed 202
+```
+
+High-validation reuse modes use 256 validation batches, 256 final batches, a
+finer threshold grid from 0.05 to 0.99, and selector scenarios for speed,
+teacher floor, teacher plus 0.1 percentage points, and teacher plus 0.2
+percentage points. Mean full-teacher accuracy in these runs is 99.56%.
+
+Plain joint utility:
+
+| Selector | Utility Acc | Utility Core | Agreement Acc | Agreement Core | Utility Gap vs Agreement |
+|---|---:|---:|---:|---:|---:|
+| Speed | 99.54% | 2.84 / 18 | 99.74% | 2.71 / 18 | -0.20 pp |
+| Teacher floor | 99.57% | 2.86 / 18 | 99.74% | 2.71 / 18 | -0.16 pp |
+| Teacher +0.1 pp | 99.65% | 3.02 / 18 | 99.75% | 2.75 / 18 | -0.11 pp |
+| Teacher +0.2 pp | 99.69% | 3.07 / 18 | 99.76% | 2.79 / 18 | -0.06 pp |
+
+Stability-fed joint utility:
+
+| Selector | Utility Acc | Utility Core | Agreement Acc | Agreement Core | Utility Gap vs Agreement |
+|---|---:|---:|---:|---:|---:|
+| Speed | 99.54% | 2.85 / 18 | 99.72% | 2.71 / 18 | -0.19 pp |
+| Teacher floor | 99.58% | 2.90 / 18 | 99.72% | 2.71 / 18 | -0.14 pp |
+| Teacher +0.1 pp | 99.63% | 2.93 / 18 | 99.74% | 2.74 / 18 | -0.11 pp |
+| Teacher +0.2 pp | 99.68% | 2.97 / 18 | 99.75% | 2.77 / 18 | -0.06 pp |
+
+Conclusion:
+
+Calibration answers the first bottleneck but not the whole bottleneck.
+With enough validation and a stricter selector, the one-candidate utility route
+can be made teacher-level. It does not yet match the true agreement frontier:
+even the teacher-plus selectors trail agreement by about 0.06 percentage points
+and use about 0.2 to 0.3 more counted core layers. Stability remains an
+auxiliary feature, not a promoted route; it is slightly better on some
+teacher-plus operating points but not decisively better than plain utility.
+
+The next training move should therefore target the joint objective itself. The
+utility router should be trained to support quality-SLO operating points, not
+just the cheapest acceptable route. Candidate next variants:
+
+- sweep higher false-accept penalties and lower cost weights;
+- train with sampled quality/cost lambdas so the utility score becomes a
+  smoother operating-point knob;
+- use agreement labels as auxiliary supervision, but keep deployment to one
+  candidate plus fallback;
+- continue reporting full threshold curves, because a single selected threshold
+  hides the actual quality/cost tradeoff.
