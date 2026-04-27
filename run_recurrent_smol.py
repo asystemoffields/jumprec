@@ -954,10 +954,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 if hops > step:
                     cur = nxt
                 step_targets.append(label_map[cur])
-            mapping = " ".join(
-                f"{letters[label_map[i]]}->{letters[label_map[display_perm[i]]]}"
+            mapping_pairs = [
+                (label_map[i], label_map[display_perm[i]])
                 for i in range(cfg.n_nodes)
-            )
+            ]
+            mapping_pairs.sort(key=lambda pair: pair[0])
+            mapping = " ".join(f"{letters[src]}->{letters[dst]}" for src, dst in mapping_pairs)
             task = task_names[display_task_id]
             text = f"Task: {task}. Map: {mapping}. Start: {letters[label_map[start]]}. Hops: {display_hops}. Answer:"
             after_answer = text.split("Answer:", 1)[1]
