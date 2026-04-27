@@ -2151,3 +2151,91 @@ The next audit step should apply the same spirit to JumpRec routing and verifier
 hygiene: held-out threshold selection, verifier calibration, oracle-router
 headroom, and an explicit statement that verifier inputs contain only proposed
 state/logit uncertainty features available at deployment time.
+
+## 2026-04-26 - verifier audit with held-out threshold selection
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_verifier_audit --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_verifier_audit --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_verifier_audit --seed 202
+```
+
+Commit `72bcc88` adds this audit. It keeps the existing fixed thresholds, then
+adds three verifier-gate checks:
+
+- verifier calibration against held-out correctness labels;
+- an oracle router upper bound, clearly labeled as non-deployable;
+- a validation/final split for threshold selection. Thresholds are chosen on
+  64 validation batches, then reported on a separate 128-batch final split. The
+  validation selector allows at most a 0.25-point drop from validation teacher
+  accuracy and then chooses the lowest average core-layer cost.
+
+Fixed threshold sanity:
+
+| Seed | Fixed Full Teacher | Fixed No-Agree 0.90 | No-Agree Layers | Fixed Agree 0.90 | Agree Layers |
+|---:|---:|---:|---:|---:|---:|
+| 42 | 99.51% | 98.75% | 3.16 / 18 | 99.51% | 3.29 / 18 |
+| 101 | 99.78% | 99.30% | 2.35 / 18 | 99.78% | 2.40 / 18 |
+| 202 | 99.60% | 99.37% | 3.28 / 18 | 99.83% | 3.36 / 18 |
+
+Held-out threshold results:
+
+| Seed | Policy | Selected Threshold | Final Teacher | Final Router | Avg Core Layers | Savings | Coverage | Accepted Precision |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 42 | No agreement | 0.99 | 99.49% | 99.32% | 6.01 / 18 | 66.64% | 97.14% | 99.65% |
+| 42 | Agreement | 0.50 | 99.49% | 99.30% | 3.09 / 18 | 82.85% | 99.37% | 99.39% |
+| 101 | No agreement | 0.90 | 99.69% | 99.48% | 2.37 / 18 | 86.83% | 99.93% | 99.50% |
+| 101 | Agreement | 0.50 | 99.69% | 99.79% | 2.33 / 18 | 87.07% | 99.87% | 99.80% |
+| 202 | No agreement | 0.80 | 99.60% | 99.01% | 3.28 / 18 | 81.80% | 99.94% | 99.05% |
+| 202 | Agreement | 0.50 | 99.60% | 99.66% | 3.24 / 18 | 81.99% | 99.55% | 99.69% |
+
+Verifier calibration:
+
+| Seed | Mean Verifier Conf | Empirical Correctness | Brier | ECE-10 |
+|---:|---:|---:|---:|---:|
+| 42 | 85.5% | 85.9% | 0.0308 | 0.0040 |
+| 101 | 91.1% | 91.4% | 0.0216 | 0.0038 |
+| 202 | 85.4% | 85.7% | 0.0331 | 0.0050 |
+
+By-budget ECE-10:
+
+| Seed | c0 | c1 | c2 | c3 |
+|---:|---:|---:|---:|---:|
+| 42 | 0.0103 | 0.0047 | 0.0067 | 0.0015 |
+| 101 | 0.0128 | 0.0073 | 0.0037 | 0.0019 |
+| 202 | 0.0147 | 0.0241 | 0.0034 | 0.0016 |
+
+Oracle router upper bound:
+
+| Seed | Oracle Acc | Avg Core Layers | Savings | Full-Loop Fallback Rate |
+|---:|---:|---:|---:|---:|
+| 42 | 99.98% | 2.67 / 18 | 85.19% | 0.24% |
+| 101 | 99.96% | 2.01 / 18 | 88.82% | 0.12% |
+| 202 | 99.95% | 2.69 / 18 | 85.07% | 0.07% |
+
+Interpretation:
+
+The verifier gate mostly passes. The verifier is well calibrated on held-out
+examples, and the agreement router survives held-out threshold selection across
+all three seeds while retaining about 82-87% counted recurrent-core savings.
+That is a much cleaner claim than tuning a threshold on the reported eval set.
+
+The caveat is also clear: no-agreement routing is less robust. Seed 202 passes
+the validation selector but drops to 99.01% on the final split, about 0.59
+points below the final teacher. That is still strong, but it should remain a
+speed-oriented diagnostic policy rather than the promoted quality-preserving
+policy.
+
+The oracle router shows remaining headroom. If we could pick the first correct
+JumpRec budget with oracle knowledge, all three seeds would land around
+99.95-99.98% at 2.01-2.69 / 18 core layers. The deployable agreement router is
+close, but not at the oracle ceiling; better verifier/routing objectives are
+still worth exploring.
+
+This does not prove general LLM transfer. It does make the synthetic JumpRec
+claim substantially harder to dismiss: the teacher is robust, prompt shortcuts
+are checked, verifier thresholds are held out, verifier calibration is measured,
+and the best deployable policy remains dramatically cheaper in counted core
+layers.
