@@ -2055,3 +2055,43 @@ needed the second-stage polish. Before turning this into a headline, the next
 teacher robustness step should use a wider or repeated validation gate, and the
 next artifact step should run the audit checks before moving toward a
 general-use looped LLM bridge.
+
+## 2026-04-26 - 256-batch teacher robustness check
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_eval_teacher --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_eval_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_eval_teacher --seed 202
+```
+
+These eval-only modes load existing checkpoints, do no training, and evaluate
+the full recurrent teacher over 256 uniform-hop batches.
+
+| Seed | Checkpoint | Full Acc | Hop 1 | Hop 2 | Hop 3 | Hop 4 | Worst Hop |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 42 | `core3_8n4h_strathop_polish2_seed42` | 99.56% | 100.00% | 99.95% | 99.57% | 98.72% | 98.72% |
+| 101 | `core3_8n4h_strathop_seed101` | 99.70% | 100.00% | 99.84% | 99.98% | 98.90% | 98.90% |
+| 202 | `core3_8n4h_strathop_seed202` | 99.60% | 100.00% | 99.93% | 99.87% | 98.54% | 98.54% |
+
+Loop profile:
+
+| Seed | 0 Loops | 1 Loop | 2 Loops | 3 Loops | 4 Loops | 5 Loops | 6 Loops |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 15.96% | 40.81% | 59.32% | 77.55% | 99.57% | 99.63% | 99.56% |
+| 101 | 12.55% | 41.26% | 59.59% | 78.14% | 99.66% | 99.72% | 99.70% |
+| 202 | 14.67% | 41.14% | 60.03% | 78.64% | 99.50% | 99.58% | 99.60% |
+
+Interpretation:
+
+This closes the immediate teacher-robustness loop for the 8-node/4-hop hard
+case. All three seeds clear 99.5% full accuracy on a wider uniform eval, and
+all worst-hop scores are above 98.5%. The seed-42 repair no longer looks like a
+small validation-slice artifact.
+
+This does not rule out synthetic-task artifacts or shortcut learning. It does
+mean the next blocker is no longer "can we get a robust recurrent teacher on
+this hard case?" The next blocker is the artifact audit: information-leakage
+checks, no-answer-token assertions, relabeling/scrambling controls, threshold
+tuning hygiene, and execution claims tied to the stated batch regime.
