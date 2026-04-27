@@ -2095,3 +2095,59 @@ mean the next blocker is no longer "can we get a robust recurrent teacher on
 this hard case?" The next blocker is the artifact audit: information-leakage
 checks, no-answer-token assertions, relabeling/scrambling controls, threshold
 tuning hygiene, and execution claims tied to the stated batch regime.
+
+## 2026-04-26 - prompt artifact audit, corrected relabel probe
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_audit_teacher --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_audit_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_audit_teacher --seed 202
+```
+
+These eval-only modes load the three robust 8-node/4-hop teachers and run
+prompt-level information probes. The first relabel attempt was superseded after
+we noticed the relabeled map entries were not sorted by displayed source label.
+Commit `7817ae4` fixes that by sorting relabeled map entries before printing
+the prompt.
+
+Prompt audit definitions:
+
+- `normal`: standard prompt.
+- `relabel`: consistently rename node symbols while preserving the same graph
+  and target. Accuracy should stay stable.
+- `map_scramble`: show a scrambled map while keeping the original target.
+  Accuracy should collapse.
+- `hop_random`: show the wrong hop count while keeping the original target.
+  Accuracy should collapse.
+
+| Seed | Checkpoint | Variant | Full Acc | Hop 1 | Hop 2 | Hop 3 | Hop 4 | Worst Hop |
+|---:|---|---|---:|---:|---:|---:|---:|---:|
+| 42 | `core3_8n4h_strathop_polish2_seed42` | normal | 99.61% | 100.00% | 99.94% | 99.60% | 98.88% | 98.88% |
+| 42 | `core3_8n4h_strathop_polish2_seed42` | relabel | 99.50% | 100.00% | 100.00% | 99.43% | 98.62% | 98.62% |
+| 42 | `core3_8n4h_strathop_polish2_seed42` | map_scramble | 14.50% | 11.45% | 13.77% | 13.52% | 18.84% | 11.45% |
+| 42 | `core3_8n4h_strathop_polish2_seed42` | hop_random | 18.85% | 20.31% | 16.51% | 17.43% | 20.64% | 16.51% |
+| 101 | `core3_8n4h_strathop_seed101` | normal | 99.62% | 100.00% | 99.83% | 100.00% | 98.60% | 98.60% |
+| 101 | `core3_8n4h_strathop_seed101` | relabel | 99.77% | 100.00% | 99.80% | 100.00% | 99.31% | 99.31% |
+| 101 | `core3_8n4h_strathop_seed101` | map_scramble | 15.15% | 11.53% | 14.00% | 13.87% | 20.50% | 11.53% |
+| 101 | `core3_8n4h_strathop_seed101` | hop_random | 18.69% | 19.61% | 16.88% | 16.39% | 21.49% | 16.39% |
+| 202 | `core3_8n4h_strathop_seed202` | normal | 99.60% | 100.00% | 99.93% | 99.73% | 98.76% | 98.76% |
+| 202 | `core3_8n4h_strathop_seed202` | relabel | 99.49% | 100.00% | 100.00% | 99.91% | 98.03% | 98.03% |
+| 202 | `core3_8n4h_strathop_seed202` | map_scramble | 15.14% | 11.86% | 14.33% | 15.26% | 19.50% | 11.86% |
+| 202 | `core3_8n4h_strathop_seed202` | hop_random | 19.21% | 19.79% | 18.09% | 17.15% | 21.82% | 17.15% |
+
+Interpretation:
+
+The prompt shortcut check passes. Consistent symbol relabeling preserves
+teacher performance across all three seeds, so the teachers are not merely
+memorizing fixed node names or a brittle display order. Scrambling the displayed
+map and randomizing the displayed hop count both collapse performance near
+chance, which is the desired destructive-control behavior: the teacher is using
+the map and hop fields causally.
+
+This strengthens the information gate, but it is still a teacher-level audit.
+The next audit step should apply the same spirit to JumpRec routing and verifier
+hygiene: held-out threshold selection, verifier calibration, oracle-router
+headroom, and an explicit statement that verifier inputs contain only proposed
+state/logit uncertainty features available at deployment time.
