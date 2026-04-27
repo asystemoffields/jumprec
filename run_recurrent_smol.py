@@ -843,7 +843,11 @@ def config_for_mode(mode: str) -> Config:
         "core3_8n4h_strathop_ablate_no_adapter",
         "core3_8n4h_strathop_ablate_no_distill",
         "core3_8n4h_strathop_ablate_no_verifier",
+        "core3_8n4h_strathop_polish2_ablate_no_adapter",
+        "core3_8n4h_strathop_polish2_ablate_no_distill",
+        "core3_8n4h_strathop_polish2_ablate_no_verifier",
     ):
+        is_polish2_ablation = mode.startswith("core3_8n4h_strathop_polish2_ablate")
         cfg.n_nodes = 8
         cfg.max_hops = 4
         cfg.preserve_steps = 2
@@ -852,26 +856,32 @@ def config_for_mode(mode: str) -> Config:
         cfg.coda_layers = 3
         cfg.final_steps = 0
         cfg.recurrent_steps = 0
-        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
-        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
-        cfg.final_loop_loss_weight = 4.0
+        if is_polish2_ablation:
+            cfg.hard_hop_fraction = 0.70
+            cfg.hard_hop_loss_weight = 2.5
+            cfg.final_loop_loss_weight = 8.0
+            cfg.load_checkpoint_tag = "core3_8n4h_strathop_polish2_seed{seed}"
+        else:
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+            cfg.final_loop_loss_weight = 4.0
+            cfg.load_checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
         cfg.jump_steps = 4500
         cfg.direct_steps = 0
         cfg.direct_layers = 3
         cfg.strict_need_agreement = False
         cfg.load_checkpoints = True
         cfg.load_jumprec_state = False
-        cfg.load_checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
         cfg.save_checkpoints = True
         cfg.checkpoint_tag = f"{mode}_seed{{seed}}"
         cfg.timing_batches = 16
         cfg.eval_batches = 96
         cfg.log_every = 500
-        if mode == "core3_8n4h_strathop_ablate_no_adapter":
+        if mode.endswith("_ablate_no_adapter"):
             cfg.use_temp_adapter = False
-        elif mode == "core3_8n4h_strathop_ablate_no_distill":
+        elif mode.endswith("_ablate_no_distill"):
             cfg.distill_loss_weight = 0.0
-        elif mode == "core3_8n4h_strathop_ablate_no_verifier":
+        elif mode.endswith("_ablate_no_verifier"):
             cfg.verifier_loss_weight = 0.0
     elif mode == "retrofit_8n4h_unfreeze":
         cfg.n_nodes = 8
@@ -2652,6 +2662,9 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_ablate_no_adapter",
             "core3_8n4h_strathop_ablate_no_distill",
             "core3_8n4h_strathop_ablate_no_verifier",
+            "core3_8n4h_strathop_polish2_ablate_no_adapter",
+            "core3_8n4h_strathop_polish2_ablate_no_distill",
+            "core3_8n4h_strathop_polish2_ablate_no_verifier",
             "retrofit_8n4h_unfreeze",
             "retrofit_12n6h",
             "retrofit_unfreeze",

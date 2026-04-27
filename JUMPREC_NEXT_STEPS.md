@@ -18,6 +18,14 @@ The important conceptual update is that the jump path and the adaptive compute
 policy are separate objects. The jump can learn good fixed-budget solutions,
 but the verifier/controller is what turns it into "small unless hard."
 
+Current active focus:
+
+> The concept has enough legs in the synthetic SmolLM hard case. Stop spending
+> the main research loop on proving that the jump can learn. The next important
+> work is to design the best routing/controller possible: quality-preserving,
+> calibrated, cheap, and robust enough to replace agreement routing where
+> possible.
+
 ## Repo State To Respect
 
 - Workspace: `C:\Users\power\Documents\SMOKE`
@@ -25,7 +33,7 @@ but the verifier/controller is what turns it into "small unless hard."
 - Results ledger: `JUMPREC_RESULTS.md`
 - Audit checklist from another Codex instance: `JUMPREC_ARTIFACT_AUDIT.md`
 - Remote: `https://github.com/asystemoffields/jumprec`
-- Recent pushed commits before this handoff:
+- Recent pushed commits before this update:
   - `7817ae4` Sort relabeled audit mappings
   - `abc4958` Record corrected prompt audit
   - `72bcc88` Add held-out verifier audit
@@ -34,6 +42,9 @@ but the verifier/controller is what turns it into "small unless hard."
   - `098399a` Record JumpRec prompt audit
   - `762c7cb` Add JumpRec hardcase ablation modes
   - `caa078b` Record seed-101 JumpRec ablations
+  - `7f5f17a` Add JumpRec next steps handoff
+
+Check `git log --oneline -5` for the final commit hash of this update.
 
 Current working tree, before this handoff file, had unrelated changes:
 
@@ -145,7 +156,10 @@ headroom in better budget selection.
 
 ### Component Ablation
 
-Seed-101 ablations were run on the current SmolLM hard case.
+Seed-101 ablations were run on the current SmolLM hard case, then the key
+ablation story was replicated on seeds 42 and 202. Seed 42 must use the
+repaired polish2 teacher checkpoint; `run_recurrent_smol.py` now includes
+explicit `core3_8n4h_strathop_polish2_ablate_*` modes for that.
 
 | Mode | Temp Adapter | Distill Loss | Verifier Loss | Agree 0.90 | Avg Core Layers | Savings |
 |---|---|---:|---:|---:|---:|---:|
@@ -154,11 +168,25 @@ Seed-101 ablations were run on the current SmolLM hard case.
 | No distill | yes | 0.0 | 0.2 | 99.79% | 2.41 / 18 | 86.63% |
 | No verifier | yes | 0.2 | 0.0 | 99.58% | 18.00 / 18 | 0.00% |
 
+Replication on seeds 42 and 202:
+
+| Seed | Mode | Teacher | c2 | c3 | Agree 0.90 | Avg Core Layers | Savings | No-Agree 0.90 |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 42 | No verifier | 99.53% | 99.30% | 99.61% | 99.56% | 18.00 / 18 | 0.00% | 99.56% |
+| 202 | No verifier | 99.53% | 99.37% | 99.76% | 99.54% | 18.00 / 18 | 0.00% | 99.54% |
+| 42 | No adapter | 99.53% | 99.17% | 99.41% | 99.50% | 3.41 / 18 | 81.04% | 98.70% |
+| 202 | No adapter | 99.53% | 99.33% | 99.67% | 99.80% | 3.46 / 18 | 80.78% | 99.17% |
+
 Implication:
 
 - Fixed-budget jumping still learns without verifier loss.
-- Adaptive compute savings collapse without verifier loss.
-- On seed 101, temp adapter and distillation are not load-bearing.
+- Adaptive compute savings collapse without verifier loss across seeds 42, 101,
+  and 202.
+- In the current 8-node / 4-hop SmolLM hard case, temp adapter is not
+  load-bearing across checked seeds.
+- Distillation was only checked on seed 101 and was not load-bearing there.
+  Seeds 42/202 no-distill can be run later for table completeness, but it is
+  not a blocker.
 - This does not prove adapter/distillation are useless. Earlier 12-node/6-hop
   toy-runner results suggested the adapter mattered under harder max-hop and
   smaller correction-budget regimes.
@@ -192,28 +220,13 @@ jump itself.
 
 ## Immediate Next Steps
 
-### 1. Replicate Key Ablations On Seeds 42 And 202
+### 1. Improve Verifier/Controller
 
-Goal: verify that the seed-101 ablation story is not a one-seed artifact.
-
-Priority runs:
-
-```powershell
-modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_verifier --seed 42
-modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_verifier --seed 202
-modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_adapter --seed 42
-modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_adapter --seed 202
-```
-
-Potential issue: the ablation modes currently load
-`core3_8n4h_strathop_seed{seed}`. Seed 42's robust checkpoint is
-`core3_8n4h_strathop_polish2_seed42`, so either add polish2 ablation modes or
-temporarily run seed 42 with a mode that loads the polish2 checkpoint. Do not
-accidentally ablate against weak seed-42 teacher weights.
-
-### 2. Improve Verifier/Controller
-
-The verifier is the key research object now.
+The verifier/controller is the key research object now. The project has moved
+from "does the jump work?" to "can we route as well as possible?" The current
+agreement router is good scientifically but expensive in wall-clock terms. The
+next goal is a controller that preserves agreement-router quality while
+approaching no-agreement or oracle-router cost.
 
 Promising changes:
 
@@ -224,6 +237,10 @@ Promising changes:
 - Budget-ranking loss: teach the router to choose the first sufficient budget.
 - Stability features beyond adjacent-budget agreement.
 - Train a small controller that predicts budget directly, with fallback.
+- Use oracle-router traces as supervision for budget choice, while keeping
+  oracle metrics clearly separate from deployable results.
+- Report accepted precision, false-accept rate, coverage, average core layers,
+  calibration, and held-out final accuracy for every controller variant.
 
 Success criteria:
 
@@ -231,8 +248,10 @@ Success criteria:
 - No-agreement policy becomes safer, especially on seed 42 and seed 202.
 - Held-out threshold audit still passes.
 - Calibration remains good.
+- Wall-clock improves in the intended local/small-batch regime, not only counted
+  core layers.
 
-### 3. Equal Wall-Clock Controls
+### 2. Equal Wall-Clock Controls
 
 The strongest scientific claim is counted core-layer savings. The engineering
 claim needs more wall-clock hygiene.
@@ -251,7 +270,7 @@ Known current pattern:
 - Agreement routing often has too much overhead in the current implementation.
 - Counted savings are more dramatic than wall-clock savings.
 
-### 4. Harder Synthetic / Algorithmic Bridge
+### 3. Harder Synthetic / Algorithmic Bridge
 
 We need tasks where recurrent depth should genuinely shine but which are closer
 to LLM behavior.
@@ -267,7 +286,7 @@ Good bridge tasks:
 Keep the rule: do not jump to open-ended chat yet. First show a natural-language
 reasoning benchmark where recurrence actually matters.
 
-### 5. General LLM Architecture Direction
+### 4. General LLM Architecture Direction
 
 The likely publishable/general architecture is:
 
@@ -284,7 +303,7 @@ Important design constraint:
   can work for synthetic tasks, but a cleaner general LLM may require recurrent
   training as a core part of adaptation, not a bolt-on at the end.
 
-### 6. Paper Hygiene
+### 5. Paper Hygiene
 
 Before any strong paper claim:
 
@@ -299,11 +318,14 @@ Before any strong paper claim:
 
 ## Suggested Next Run Order
 
-1. Add or verify polish2 ablation modes for seed 42.
-2. Run no-verifier ablations for seeds 42 and 202.
-3. Run no-adapter ablations for seeds 42 and 202 if budget permits.
-4. Try a cost-aware verifier/controller objective on seed 101 first.
-5. If verifier improvement is positive, confirm on seeds 42 and 202.
+1. Add a cost-aware verifier/controller objective and test it on seed 101.
+2. Compare against current agreement routing, no-agreement routing, and oracle
+   routing on held-out validation/final splits.
+3. If controller quality/cost improves, confirm on seeds 42 and 202.
+4. Run no-distill seeds 42/202 only as background table cleanup, not as a
+   blocker.
+5. Add a wall-clock-focused controller benchmark for batch sizes 1, 2, 4, 8,
+   16, 32, and 64.
 6. Start a natural-language graph traversal bridge task.
 7. Only then move toward a general-use looped LLM artifact.
 
@@ -350,16 +372,20 @@ python .\run_recurrent_smol.py --mode dry_strathop_polish2_verifier_audit --loca
 
 The current state is encouraging:
 
-- The synthetic JumpRec concept is not dead.
+- The synthetic JumpRec concept has real legs so far.
 - The teacher robustness issue is mostly closed for the 8-node / 4-hop case.
 - Prompt shortcut audits pass for teacher and JumpRec.
 - Held-out verifier audits pass for agreement routing.
+- No-verifier ablations across seeds show the jump learns but adaptive savings
+  require verifier supervision.
+- No-adapter ablations show the temp adapter is not load-bearing in the current
+  SmolLM hard case.
 - The verifier/controller is now clearly the most important next research
   target.
 
 The next phase should be ruthless but constructive:
 
-1. Confirm ablations across seeds.
-2. Improve the verifier/controller.
+1. Design the best deployable router/controller possible.
+2. Preserve agreement-router quality while reducing overhead.
 3. Tie compute savings to wall-clock in the intended local-inference regime.
 4. Bridge from synthetic pointer chasing to natural-language reasoning tasks.

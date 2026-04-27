@@ -2333,3 +2333,56 @@ For the paper-facing claim, this is useful: JumpRec is not just a pile of
 ingredients where every piece must work by faith. The core jump-plus-tail
 mechanism learns well even under removals, while verifier supervision is
 clearly required for the adaptive compute-saving behavior.
+
+## 2026-04-26 - seed-42/202 JumpRec component ablation replication
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_ablate_no_verifier --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_verifier --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_ablate_no_adapter --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_ablate_no_adapter --seed 202
+```
+
+The runner now has explicit `core3_8n4h_strathop_polish2_ablate_*` modes so
+seed 42 loads the repaired teacher checkpoint
+`core3_8n4h_strathop_polish2_seed42` instead of the weak original stratified
+checkpoint. Seeds 101 and 202 continue to use the original strong
+`core3_8n4h_strathop_seed{seed}` checkpoints.
+
+| Seed | Mode | Teacher | c0 | c1 | c2 | c3 | Agree 0.90 | Avg Core Layers | Savings | No-Agree 0.90 |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | No verifier | 99.53% | 48.00% | 96.47% | 99.30% | 99.61% | 99.56% | 18.00 / 18 | 0.00% | 99.56% |
+| 202 | No verifier | 99.53% | 47.98% | 94.30% | 99.37% | 99.76% | 99.54% | 18.00 / 18 | 0.00% | 99.54% |
+| 42 | No adapter | 99.53% | 47.88% | 95.83% | 99.17% | 99.41% | 99.50% | 3.41 / 18 | 81.04% | 98.70% |
+| 202 | No adapter | 99.53% | 48.08% | 93.95% | 99.33% | 99.67% | 99.80% | 3.46 / 18 | 80.78% | 99.17% |
+
+Timing:
+
+| Seed | Mode | Full Teacher | Serial No-Agree 0.90 | Serial Agreement 0.80 |
+|---:|---|---:|---:|---:|
+| 42 | No verifier | 34.45 ms | 52.66 ms | 76.80 ms |
+| 202 | No verifier | 34.80 ms | 50.31 ms | 73.12 ms |
+| 42 | No adapter | 33.74 ms | 31.93 ms | 48.15 ms |
+| 202 | No adapter | 34.57 ms | 31.11 ms | 61.69 ms |
+
+Interpretation:
+
+The seed-101 ablation story replicates on seeds 42 and 202. Removing verifier
+supervision does not prevent fixed-budget JumpRec from learning: c2/c3 still
+reach teacher-level accuracy. It does break adaptive compute, because the
+deployable verifier/router falls back to the full recurrent teacher at every
+reported threshold, yielding 18.00 / 18 core layers and no counted savings.
+
+Removing the temporary adapter does not break this current SmolLM 8-node/4-hop
+regime. Agreement routing at threshold 0.90 remains teacher-level on both
+additional seeds while using about 3.4 / 18 counted core layers. No-agreement
+routing is weaker, especially on seed 42, which is consistent with the earlier
+held-out verifier audit.
+
+The narrow conclusion is now stronger: in the current hardcase setup, verifier
+loss is load-bearing for adaptive savings, while the temporary adapter is not.
+This should not be overgeneralized to harder task regimes; older 12-node/6-hop
+toy-runner evidence still suggests the adapter can matter when the correction
+budget is tighter.
