@@ -1,6 +1,8 @@
 # Experiments
 
 This folder is for reproducible experiment orchestration around JumpRec.
+`CHECKPOINT_MANIFEST.md` records the active predecessor checkpoints for reuse
+and high-validation modes.
 
 Current cost policy:
 

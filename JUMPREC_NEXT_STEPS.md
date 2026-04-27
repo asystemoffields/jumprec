@@ -535,3 +535,33 @@ Immediate router pivot:
 7. If seed 42 or 202 fail, inspect whether the failure is candidate degradation,
    over-acceptance, fallback overuse, or utility calibration before adding a new
    mechanism.
+
+## Current Bottleneck Answer
+
+The corrected agreement-auxiliary quality/SLO sweep answers the immediate
+question: the last-budget target bug was real, but it was not the main
+bottleneck. Masking the last correction budget out of the agreement auxiliary
+loss and adding per-budget acceptance diagnostics showed that utility accepts
+the highest budget rarely but nonzero, usually with high precision. The stronger
+quality objective remains the best deployable one-candidate utility branch, but
+high-validation reuse still trails true agreement by roughly 0.07 to 0.09
+percentage points at the teacher-plus operating points while using about 0.27
+to 0.34 more counted core layers.
+
+Do not move to broad/general LLM application testing yet. The project is still
+synthetic-benchmark-positive, but the current deployable router has not matched
+the non-deployable agreement frontier. The next research step should either:
+
+1. harden/refactor the runner enough that new router ideas can be tested without
+   widening one giant script further; or
+2. test a new deployable agreement substitute, such as a next-budget prediction
+   target or a cheap learned consistency head, while keeping the one-candidate
+   inference contract.
+
+Short-term engineering queue:
+
+1. Keep the new `tests/` guardrails green before adding more modes.
+2. Use `experiments/CHECKPOINT_MANIFEST.md` when launching reuse/highval runs.
+3. Split the first reusable surfaces out of `run_recurrent_smol.py`: config
+   resolution, held-out audit/selector logic, and checkpoint manifests are the
+   highest-leverage extraction points.

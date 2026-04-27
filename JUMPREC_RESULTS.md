@@ -3144,3 +3144,77 @@ just the cheapest acceptable route. Candidate next variants:
   candidate plus fallback;
 - continue reporting full threshold curves, because a single selected threshold
   hides the actual quality/cost tradeoff.
+
+## 2026-04-27 - fixed agreement-aux objective audit
+
+An external audit pointed out a real objective bug in the first quality/SLO
+joint-halt sweep: the agreement auxiliary target treated the last correction
+budget as unsafe because it has no adjacent-budget partner. The fix masks the
+last budget out of the agreement auxiliary loss instead of labeling it false.
+The route utility loss still decides whether the last budget should be accepted.
+
+The held-out audit now also records acceptance count, accepted precision, and
+acceptance share by correction budget for each policy/threshold. This was added
+to directly test whether the utility router was learning to avoid the highest
+budget.
+
+Commands for the corrected training pass:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_slo --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_slo --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_slo --seed 202
+```
+
+Standard held-out audit means:
+
+| Variant | Policy | Final Acc | Avg Core | Coverage | Accepted Precision | Accepted Share c0/c1/c2/c3 |
+|---|---|---:|---:|---:|---:|---|
+| Quality | agreement | 99.740% | 2.72 / 18 | 99.77% | 99.780% | 46.1% / 51.7% / 2.2% / 0.0% |
+| Quality | utility | 99.675% | 2.93 / 18 | 99.51% | 99.791% | 44.3% / 50.3% / 4.7% / 0.7% |
+| SLO | agreement | 99.723% | 2.74 / 18 | 99.69% | 99.775% | 45.7% / 52.1% / 2.2% / 0.0% |
+| SLO | utility | 99.597% | 2.91 / 18 | 99.50% | 99.730% | 44.3% / 50.9% / 4.4% / 0.5% |
+
+The fix slightly improves the quality objective relative to the pre-fix run,
+especially on seeds 101 and 202, but it does not remove the agreement frontier
+gap. It also falsifies the suspected failure mode: utility is not simply
+refusing the highest correction budget. It accepts c3 rarely but nonzero, and
+the accepted c3 examples are usually high precision. The deeper issue is that
+the one-candidate utility policy still needs more fallback/deeper-budget usage
+to approach the agreement policy's quality.
+
+Commands for high-validation reuse on the corrected checkpoints:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_reuse_highval --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_reuse_highval --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_slo_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_slo_reuse_highval --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_slo_reuse_highval --seed 202
+```
+
+High-validation selector means:
+
+| Variant | Selector | Utility Acc | Utility Core | Agreement Acc | Agreement Core | Utility Gap |
+|---|---|---:|---:|---:|---:|---:|
+| Quality | Speed | 99.632% | 2.89 / 18 | 99.740% | 2.70 / 18 | -0.108 pp |
+| Quality | Teacher floor | 99.658% | 2.92 / 18 | 99.746% | 2.71 / 18 | -0.088 pp |
+| Quality | Teacher +0.1 pp | 99.681% | 3.03 / 18 | 99.762% | 2.75 / 18 | -0.081 pp |
+| Quality | Teacher +0.2 pp | 99.699% | 3.06 / 18 | 99.766% | 2.79 / 18 | -0.067 pp |
+| SLO | Speed | 99.569% | 2.87 / 18 | 99.744% | 2.72 / 18 | -0.175 pp |
+| SLO | Teacher floor | 99.605% | 2.90 / 18 | 99.756% | 2.74 / 18 | -0.151 pp |
+| SLO | Teacher +0.1 pp | 99.683% | 3.07 / 18 | 99.774% | 2.78 / 18 | -0.092 pp |
+| SLO | Teacher +0.2 pp | 99.691% | 3.13 / 18 | 99.780% | 2.79 / 18 | -0.089 pp |
+
+Conclusion:
+
+The corrected quality objective is the best deployable utility variant so far,
+but it still does not justify general LLM application testing as the next step.
+It can be tuned to teacher-level performance on this synthetic benchmark, but
+it does not match the agreement quality/cost frontier. The current bottleneck is
+therefore not calibration and not the final-budget auxiliary bug. It is the
+missing deployable substitute for adjacent-budget agreement.

@@ -131,6 +131,10 @@ class Config:
     joint_halt_candidate_distill_weight: float = 0.10
     joint_halt_verifier_bce_weight: float = 0.10
     joint_halt_stability_weight: float = 0.05
+    joint_halt_agreement_bce_weight: float = 0.0
+    joint_halt_false_accept_weight_max: float = 0.0
+    joint_halt_cost_weight_min: float = -1.0
+    joint_halt_cost_weight_max: float = -1.0
     use_temp_adapter: bool = True
     strict_need_agreement: bool = True
     adapter_rank: int = 8
@@ -182,6 +186,10 @@ def config_for_mode(mode: str) -> Config:
         "dry_strathop_polish2_joint_halt_reuse",
         "dry_strathop_polish2_joint_halt_stability",
         "dry_strathop_polish2_joint_halt_stability_reuse",
+        "dry_strathop_polish2_joint_halt_quality",
+        "dry_strathop_polish2_joint_halt_quality_reuse",
+        "dry_strathop_polish2_joint_halt_slo",
+        "dry_strathop_polish2_joint_halt_slo_reuse",
     ):
         cfg.use_fake_model = True
         cfg.d_model = 64
@@ -648,8 +656,12 @@ def config_for_mode(mode: str) -> Config:
         elif mode in (
             "dry_strathop_polish2_joint_halt",
             "dry_strathop_polish2_joint_halt_stability",
+            "dry_strathop_polish2_joint_halt_quality",
+            "dry_strathop_polish2_joint_halt_slo",
         ):
             use_joint_stability = mode.endswith("_stability")
+            use_quality_objective = "_quality" in mode
+            use_slo_objective = "_slo" in mode
             cfg.n_nodes = 8
             cfg.max_hops = 4
             cfg.max_correct = 3
@@ -667,6 +679,10 @@ def config_for_mode(mode: str) -> Config:
             cfg.checkpoint_tag = (
                 "dry_strathop_polish2_joint_halt_stability_seed{seed}"
                 if use_joint_stability
+                else "dry_strathop_polish2_joint_halt_quality_seed{seed}"
+                if use_quality_objective
+                else "dry_strathop_polish2_joint_halt_slo_seed{seed}"
+                if use_slo_objective
                 else "dry_strathop_polish2_joint_halt_seed{seed}"
             )
             cfg.load_jumprec_state = False
@@ -676,14 +692,35 @@ def config_for_mode(mode: str) -> Config:
             cfg.utility_false_accept_weight = 6.0
             cfg.utility_cost_weight = 0.20
             cfg.utility_correctness_bce_weight = 0.10
+            if use_quality_objective:
+                cfg.utility_false_accept_weight = 12.0
+                cfg.utility_cost_weight = 0.08
+                cfg.joint_halt_candidate_ce_weight = 1.00
+                cfg.joint_halt_candidate_distill_weight = 0.15
+                cfg.joint_halt_verifier_bce_weight = 0.08
+                cfg.joint_halt_agreement_bce_weight = 0.08
+            if use_slo_objective:
+                cfg.utility_false_accept_weight = 8.0
+                cfg.utility_cost_weight = 0.12
+                cfg.joint_halt_false_accept_weight_max = 18.0
+                cfg.joint_halt_cost_weight_min = 0.04
+                cfg.joint_halt_cost_weight_max = 0.18
+                cfg.joint_halt_candidate_ce_weight = 1.00
+                cfg.joint_halt_candidate_distill_weight = 0.15
+                cfg.joint_halt_verifier_bce_weight = 0.08
+                cfg.joint_halt_agreement_bce_weight = 0.10
             cfg.router_val_batches = 1
             cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
             cfg.timing_batch_sizes = "1,2"
         elif mode in (
             "dry_strathop_polish2_joint_halt_reuse",
             "dry_strathop_polish2_joint_halt_stability_reuse",
+            "dry_strathop_polish2_joint_halt_quality_reuse",
+            "dry_strathop_polish2_joint_halt_slo_reuse",
         ):
             use_joint_stability = mode.endswith("_stability_reuse")
+            use_quality_objective = "_quality" in mode
+            use_slo_objective = "_slo" in mode
             cfg.n_nodes = 8
             cfg.max_hops = 4
             cfg.max_correct = 3
@@ -699,6 +736,10 @@ def config_for_mode(mode: str) -> Config:
             cfg.checkpoint_tag = (
                 "dry_strathop_polish2_joint_halt_stability_seed{seed}"
                 if use_joint_stability
+                else "dry_strathop_polish2_joint_halt_quality_seed{seed}"
+                if use_quality_objective
+                else "dry_strathop_polish2_joint_halt_slo_seed{seed}"
+                if use_slo_objective
                 else "dry_strathop_polish2_joint_halt_seed{seed}"
             )
             cfg.load_jumprec_state = True
@@ -708,6 +749,23 @@ def config_for_mode(mode: str) -> Config:
             cfg.utility_false_accept_weight = 6.0
             cfg.utility_cost_weight = 0.20
             cfg.utility_correctness_bce_weight = 0.10
+            if use_quality_objective:
+                cfg.utility_false_accept_weight = 12.0
+                cfg.utility_cost_weight = 0.08
+                cfg.joint_halt_candidate_ce_weight = 1.00
+                cfg.joint_halt_candidate_distill_weight = 0.15
+                cfg.joint_halt_verifier_bce_weight = 0.08
+                cfg.joint_halt_agreement_bce_weight = 0.08
+            if use_slo_objective:
+                cfg.utility_false_accept_weight = 8.0
+                cfg.utility_cost_weight = 0.12
+                cfg.joint_halt_false_accept_weight_max = 18.0
+                cfg.joint_halt_cost_weight_min = 0.04
+                cfg.joint_halt_cost_weight_max = 0.18
+                cfg.joint_halt_candidate_ce_weight = 1.00
+                cfg.joint_halt_candidate_distill_weight = 0.15
+                cfg.joint_halt_verifier_bce_weight = 0.08
+                cfg.joint_halt_agreement_bce_weight = 0.10
             cfg.router_val_batches = 1
             cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
             cfg.timing_batch_sizes = "1,2"
@@ -1550,11 +1608,37 @@ def config_for_mode(mode: str) -> Config:
         "core3_8n4h_strathop_polish2_joint_halt_reuse_highval",
         "core3_8n4h_strathop_joint_halt_stability_reuse_highval",
         "core3_8n4h_strathop_polish2_joint_halt_stability_reuse_highval",
+        "core3_8n4h_strathop_joint_halt_quality",
+        "core3_8n4h_strathop_polish2_joint_halt_quality",
+        "core3_8n4h_strathop_joint_halt_quality_reuse",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_reuse",
+        "core3_8n4h_strathop_joint_halt_quality_reuse_highval",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_reuse_highval",
+        "core3_8n4h_strathop_joint_halt_quality_stability",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_stability",
+        "core3_8n4h_strathop_joint_halt_quality_stability_reuse",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse",
+        "core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse_highval",
+        "core3_8n4h_strathop_joint_halt_slo",
+        "core3_8n4h_strathop_polish2_joint_halt_slo",
+        "core3_8n4h_strathop_joint_halt_slo_reuse",
+        "core3_8n4h_strathop_polish2_joint_halt_slo_reuse",
+        "core3_8n4h_strathop_joint_halt_slo_reuse_highval",
+        "core3_8n4h_strathop_polish2_joint_halt_slo_reuse_highval",
+        "core3_8n4h_strathop_joint_halt_slo_stability",
+        "core3_8n4h_strathop_polish2_joint_halt_slo_stability",
+        "core3_8n4h_strathop_joint_halt_slo_stability_reuse",
+        "core3_8n4h_strathop_polish2_joint_halt_slo_stability_reuse",
+        "core3_8n4h_strathop_joint_halt_slo_stability_reuse_highval",
+        "core3_8n4h_strathop_polish2_joint_halt_slo_stability_reuse_highval",
     ):
         is_polish2_joint = mode.startswith("core3_8n4h_strathop_polish2")
         is_joint_reuse = "_reuse" in mode
         is_highval_reuse = mode.endswith("_reuse_highval")
-        use_joint_stability = "_joint_halt_stability" in mode
+        use_joint_stability = "_stability" in mode
+        use_quality_objective = "_quality" in mode
+        use_slo_objective = "_slo" in mode
         cfg.n_nodes = 8
         cfg.max_hops = 4
         cfg.preserve_steps = 2
@@ -1563,32 +1647,39 @@ def config_for_mode(mode: str) -> Config:
         cfg.coda_layers = 3
         cfg.final_steps = 0
         cfg.recurrent_steps = 0
+        family_prefix = "core3_8n4h_strathop_polish2" if is_polish2_joint else "core3_8n4h_strathop"
+        base_teacher_tag = (
+            "core3_8n4h_strathop_polish2_seed{seed}"
+            if is_polish2_joint
+            else "core3_8n4h_strathop_seed{seed}"
+        )
+        if use_quality_objective:
+            reuse_tag = (
+                f"{family_prefix}_joint_halt_quality_stability_seed{{seed}}"
+                if use_joint_stability
+                else f"{family_prefix}_joint_halt_quality_seed{{seed}}"
+            )
+        elif use_slo_objective:
+            reuse_tag = (
+                f"{family_prefix}_joint_halt_slo_stability_seed{{seed}}"
+                if use_joint_stability
+                else f"{family_prefix}_joint_halt_slo_seed{{seed}}"
+            )
+        else:
+            reuse_tag = (
+                f"{family_prefix}_joint_halt_stability_seed{{seed}}"
+                if use_joint_stability
+                else f"{family_prefix}_joint_halt_seed{{seed}}"
+            )
         if is_polish2_joint:
             cfg.hard_hop_fraction = 0.70
             cfg.hard_hop_loss_weight = 2.5
             cfg.final_loop_loss_weight = 8.0
-            cfg.load_checkpoint_tag = (
-                (
-                    "core3_8n4h_strathop_polish2_joint_halt_stability_seed{seed}"
-                    if use_joint_stability
-                    else "core3_8n4h_strathop_polish2_joint_halt_seed{seed}"
-                )
-                if is_joint_reuse
-                else "core3_8n4h_strathop_polish2_seed{seed}"
-            )
         else:
             cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
             cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
             cfg.final_loop_loss_weight = 4.0
-            cfg.load_checkpoint_tag = (
-                (
-                    "core3_8n4h_strathop_joint_halt_stability_seed{seed}"
-                    if use_joint_stability
-                    else "core3_8n4h_strathop_joint_halt_seed{seed}"
-                )
-                if is_joint_reuse
-                else "core3_8n4h_strathop_seed{seed}"
-            )
+        cfg.load_checkpoint_tag = reuse_tag if is_joint_reuse else base_teacher_tag
         cfg.jump_steps = 0
         cfg.joint_halt_steps = 0 if is_joint_reuse else 2000
         cfg.direct_steps = 0
@@ -1604,6 +1695,23 @@ def config_for_mode(mode: str) -> Config:
         cfg.utility_false_accept_weight = 6.0
         cfg.utility_cost_weight = 0.20
         cfg.utility_correctness_bce_weight = 0.10
+        if use_quality_objective:
+            cfg.utility_false_accept_weight = 12.0
+            cfg.utility_cost_weight = 0.08
+            cfg.joint_halt_candidate_ce_weight = 1.00
+            cfg.joint_halt_candidate_distill_weight = 0.15
+            cfg.joint_halt_verifier_bce_weight = 0.08
+            cfg.joint_halt_agreement_bce_weight = 0.08
+        if use_slo_objective:
+            cfg.utility_false_accept_weight = 8.0
+            cfg.utility_cost_weight = 0.12
+            cfg.joint_halt_false_accept_weight_max = 18.0
+            cfg.joint_halt_cost_weight_min = 0.04
+            cfg.joint_halt_cost_weight_max = 0.18
+            cfg.joint_halt_candidate_ce_weight = 1.00
+            cfg.joint_halt_candidate_distill_weight = 0.15
+            cfg.joint_halt_verifier_bce_weight = 0.08
+            cfg.joint_halt_agreement_bce_weight = 0.10
         cfg.router_val_batches = 64
         cfg.router_threshold_candidates = "0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80,0.85,0.90,0.95,0.97,0.99"
         cfg.timing_batches = 16
@@ -2279,7 +2387,19 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         utility_loss = expected_wrong + float(cfg.utility_cost_weight) * expected_core
         return (utility_loss * weights).sum() / weights.sum().clamp_min(1e-6), expected_wrong, expected_core
 
-    def joint_halt_expected_loss(accept_logits, logits_stack, full_correct, target, hops):
+    def joint_halt_expected_loss(
+        accept_logits,
+        logits_stack,
+        full_correct,
+        target,
+        hops,
+        false_accept_weight: float | None = None,
+        cost_weight: float | None = None,
+    ):
+        if false_accept_weight is None:
+            false_accept_weight = float(cfg.utility_false_accept_weight)
+        if cost_weight is None:
+            cost_weight = float(cfg.utility_cost_weight)
         weights = example_weights(hops)
         accept_prob = torch.sigmoid(accept_logits)
         target_idx = target.view(1, -1, 1).expand(logits_stack.size(0), -1, 1)
@@ -2292,13 +2412,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             route_prob = survival * accept_prob[corrections]
             wrong_prob = (1.0 - target_prob[corrections]).clamp(0.0, 1.0)
             core_frac = (float(cfg.jump_layers) + float(corrections * cfg.core_layers)) / full_core_layers
-            expected_wrong = expected_wrong + route_prob * wrong_prob * float(cfg.utility_false_accept_weight)
+            expected_wrong = expected_wrong + route_prob * wrong_prob * float(false_accept_weight)
             expected_core = expected_core + route_prob * core_frac
             survival = survival * (1.0 - accept_prob[corrections])
         fallback_wrong = (~full_correct.bool()).float()
         expected_wrong = expected_wrong + survival * fallback_wrong
         expected_core = expected_core + survival
-        route_loss = expected_wrong + float(cfg.utility_cost_weight) * expected_core
+        route_loss = expected_wrong + float(cost_weight) * expected_core
         return (route_loss * weights).sum() / weights.sum().clamp_min(1e-6), expected_wrong, expected_core
 
     def utility_router_aux_bce(accept_logits, correct_stack, hops):
@@ -2311,6 +2431,21 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             weights = weights * torch.where(target > 0.5, torch.ones_like(target), false_accept_weight)
         losses = F.binary_cross_entropy_with_logits(accept_logits, target, reduction="none")
         return float(cfg.utility_correctness_bce_weight) * (losses * weights).sum() / weights.sum().clamp_min(1e-6)
+
+    def utility_router_agreement_bce(accept_logits, correct_stack, pred_stack, hops):
+        if cfg.joint_halt_agreement_bce_weight <= 0.0:
+            return accept_logits.new_tensor(0.0)
+        agree_stack = torch.zeros_like(correct_stack, dtype=torch.bool)
+        if cfg.max_correct > 0:
+            agree_stack[:-1] = pred_stack[:-1] == pred_stack[1:]
+        safe_target = (correct_stack.bool() & agree_stack).float()
+        weights = example_weights(hops).view(1, -1).expand_as(accept_logits)
+        weights = weights.clone()
+        weights[-1] = 0.0
+        false_accept_weight = torch.full_like(safe_target, float(cfg.utility_false_accept_weight))
+        weights = weights * torch.where(safe_target > 0.5, torch.ones_like(safe_target), false_accept_weight)
+        losses = F.binary_cross_entropy_with_logits(accept_logits, safe_target, reduction="none")
+        return float(cfg.joint_halt_agreement_bce_weight) * (losses * weights).sum() / weights.sum().clamp_min(1e-6)
 
     model = RecurrentSmol().to(device)
     trainable = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
@@ -2946,12 +3081,26 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 utility_logits = torch.stack(out["utility"], dim=0)
                 pred_stack = logits_stack.detach().argmax(dim=-1)
                 correct_stack = pred_stack == target.unsqueeze(0)
+                route_false_accept_weight = float(cfg.utility_false_accept_weight)
+                if cfg.joint_halt_false_accept_weight_max > route_false_accept_weight:
+                    route_false_accept_weight = random.uniform(
+                        route_false_accept_weight,
+                        float(cfg.joint_halt_false_accept_weight_max),
+                    )
+                route_cost_weight = float(cfg.utility_cost_weight)
+                if cfg.joint_halt_cost_weight_min >= 0.0 and cfg.joint_halt_cost_weight_max >= cfg.joint_halt_cost_weight_min:
+                    route_cost_weight = random.uniform(
+                        float(cfg.joint_halt_cost_weight_min),
+                        float(cfg.joint_halt_cost_weight_max),
+                    )
                 route_loss, expected_wrong, expected_core = joint_halt_expected_loss(
                     utility_logits,
                     logits_stack,
                     full_pred == target,
                     target,
                     hops,
+                    false_accept_weight=route_false_accept_weight,
+                    cost_weight=route_cost_weight,
                 )
                 ce_loss = torch.stack(
                     [weighted_ce(logits_stack[c], target, hops) for c in range(cfg.max_correct + 1)]
@@ -2966,12 +3115,19 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     ]
                 ).mean()
                 aux_bce = utility_router_aux_bce(utility_logits, correct_stack, hops)
+                agreement_bce = utility_router_agreement_bce(
+                    utility_logits,
+                    correct_stack,
+                    pred_stack,
+                    hops,
+                )
                 joint_loss = (
                     route_loss
                     + float(cfg.joint_halt_candidate_ce_weight) * ce_loss
                     + float(cfg.joint_halt_candidate_distill_weight) * distill_loss
                     + float(cfg.joint_halt_verifier_bce_weight) * verifier_loss
                     + aux_bce
+                    + agreement_bce
                 )
                 stability_loss = utility_logits.new_tensor(0.0)
                 if cfg.use_stability_head and out["stability"] is not None and cfg.joint_halt_stability_weight > 0.0:
@@ -3018,8 +3174,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         f"loss {joint_loss.item():.4f} route {route_loss.item():.4f} "
                         f"ce {ce_loss.item():.4f} distill {distill_loss.item():.4f} "
                         f"vf {verifier_loss.item():.4f} aux {aux_bce.item():.4f} "
+                        f"agree_aux {agreement_bce.item():.4f} "
                         f"stab {stability_loss.item():.4f} "
                         f"wrong {expected_wrong.mean().item():.4f} core {expected_core.mean().item():.4f} "
+                        f"fa_w {route_false_accept_weight:.2f} cost_w {route_cost_weight:.3f} "
                         f"acc {(routed_pred == target).float().mean().item()*100:.1f}% "
                         f"coverage {trusted.float().mean().item()*100:.1f}% "
                         f"precision {precision*100:.1f}% "
@@ -3743,6 +3901,11 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                 "accepted_count": 0,
                                 "accepted_precision": None,
                                 "false_accept_rate": None,
+                                "fallback_count": 0,
+                                "accepted_by_budget": [0 for _ in range(cfg.max_correct + 1)],
+                                "accepted_correct_by_budget": [0.0 for _ in range(cfg.max_correct + 1)],
+                                "accepted_precision_by_budget": [None for _ in range(cfg.max_correct + 1)],
+                                "accepted_share_by_budget": [0.0 for _ in range(cfg.max_correct + 1)],
                             }
                             for threshold in threshold_values
                         }
@@ -3757,6 +3920,48 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     policy_name: {threshold_key(threshold): 0 for threshold in threshold_values}
                     for policy_name in all_policy_names
                 }
+                fallback_count = {
+                    policy_name: {threshold_key(threshold): 0 for threshold in threshold_values}
+                    for policy_name in all_policy_names
+                }
+                accepted_by_budget = {
+                    policy_name: {
+                        threshold_key(threshold): [0 for _ in range(cfg.max_correct + 1)]
+                        for threshold in threshold_values
+                    }
+                    for policy_name in all_policy_names
+                }
+                accepted_correct_by_budget = {
+                    policy_name: {
+                        threshold_key(threshold): [0.0 for _ in range(cfg.max_correct + 1)]
+                        for threshold in threshold_values
+                    }
+                    for policy_name in all_policy_names
+                }
+
+                def record_accepts(policy_name, key, trusted, chosen, routed_pred, target):
+                    accepted_count[policy_name][key] += int(trusted.sum().item())
+                    fallback_count[policy_name][key] += int((~trusted).sum().item())
+                    if not trusted.any():
+                        return
+                    accepted_is_correct = (routed_pred[trusted] == target[trusted]).float()
+                    accepted_correct[policy_name][key] += accepted_is_correct.sum().item()
+                    accepted_budget = chosen[trusted].clamp(0, cfg.max_correct).long()
+                    budget_counts = torch.bincount(
+                        accepted_budget.detach().cpu(),
+                        minlength=cfg.max_correct + 1,
+                    )
+                    budget_correct = torch.bincount(
+                        accepted_budget.detach().cpu(),
+                        weights=accepted_is_correct.detach().cpu(),
+                        minlength=cfg.max_correct + 1,
+                    )
+                    for budget in range(cfg.max_correct + 1):
+                        accepted_by_budget[policy_name][key][budget] += int(budget_counts[budget].item())
+                        accepted_correct_by_budget[policy_name][key][budget] += float(
+                            budget_correct[budget].item()
+                        )
+
                 with torch.no_grad():
                     for _ in range(num_batches):
                         input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(
@@ -3836,11 +4041,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     torch.full_like(chosen.float(), float(cfg.loop_steps)),
                                 ).mean().item()
                                 item["avg_core_layers"] += core_layers.mean().item()
-                                accepted_count[policy_name][key] += int(trusted.sum().item())
-                                if trusted.any():
-                                    accepted_correct[policy_name][key] += (
-                                        routed_pred[trusted] == target[trusted]
-                                    ).float().sum().item()
+                                record_accepts(policy_name, key, trusted, chosen, routed_pred, target)
                             if cfg.use_stability_head:
                                 for policy_name, stability_threshold in zip(
                                     stability_policy_names,
@@ -3867,11 +4068,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                         torch.full_like(chosen.float(), float(cfg.loop_steps)),
                                     ).mean().item()
                                     item["avg_core_layers"] += core_layers.mean().item()
-                                    accepted_count[policy_name][key] += int(trusted.sum().item())
-                                    if trusted.any():
-                                        accepted_correct[policy_name][key] += (
-                                            routed_pred[trusted] == target[trusted]
-                                        ).float().sum().item()
+                                    record_accepts(policy_name, key, trusted, chosen, routed_pred, target)
                             if cfg.use_utility_router:
                                 for policy_name, guarded in utility_policy_defs:
                                     routed_pred, trusted, chosen, core_layers = route_utility_predictions(
@@ -3894,11 +4091,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                         torch.full_like(chosen.float(), float(cfg.loop_steps)),
                                     ).mean().item()
                                     item["avg_core_layers"] += core_layers.mean().item()
-                                    accepted_count[policy_name][key] += int(trusted.sum().item())
-                                    if trusted.any():
-                                        accepted_correct[policy_name][key] += (
-                                            routed_pred[trusted] == target[trusted]
-                                        ).float().sum().item()
+                                    record_accepts(policy_name, key, trusted, chosen, routed_pred, target)
                             if cfg.use_next_agreement_head:
                                 for policy_name, next_threshold in zip(
                                     next_agreement_policy_names,
@@ -3926,11 +4119,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                         torch.full_like(chosen.float(), float(cfg.loop_steps)),
                                     ).mean().item()
                                     item["avg_core_layers"] += core_layers.mean().item()
-                                    accepted_count[policy_name][key] += int(trusted.sum().item())
-                                    if trusted.any():
-                                        accepted_correct[policy_name][key] += (
-                                            routed_pred[trusted] == target[trusted]
-                                        ).float().sum().item()
+                                    record_accepts(policy_name, key, trusted, chosen, routed_pred, target)
                             if cfg.use_budget_controller:
                                 routed_pred, trusted, chosen, core_layers = route_budget_predictions(
                                     pred_stack,
@@ -3951,11 +4140,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     torch.full_like(chosen.float(), float(cfg.loop_steps)),
                                 ).mean().item()
                                 item["avg_core_layers"] += core_layers.mean().item()
-                                accepted_count["budget"][key] += int(trusted.sum().item())
-                                if trusted.any():
-                                    accepted_correct["budget"][key] += (
-                                        routed_pred[trusted] == target[trusted]
-                                    ).float().sum().item()
+                                record_accepts("budget", key, trusted, chosen, routed_pred, target)
                                 routed_pred, trusted, chosen, core_layers = route_budget_escalate_predictions(
                                     pred_stack,
                                     verify_stack,
@@ -3975,11 +4160,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     torch.full_like(chosen.float(), float(cfg.loop_steps)),
                                 ).mean().item()
                                 item["avg_core_layers"] += core_layers.mean().item()
-                                accepted_count["budget_escalate"][key] += int(trusted.sum().item())
-                                if trusted.any():
-                                    accepted_correct["budget_escalate"][key] += (
-                                        routed_pred[trusted] == target[trusted]
-                                    ).float().sum().item()
+                                record_accepts("budget_escalate", key, trusted, chosen, routed_pred, target)
                                 routed_pred, trusted, chosen, core_layers = route_budget_open_predictions(
                                     pred_stack,
                                     full_pred,
@@ -3995,11 +4176,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     torch.full_like(chosen.float(), float(cfg.loop_steps)),
                                 ).mean().item()
                                 item["avg_core_layers"] += core_layers.mean().item()
-                                accepted_count["budget_open"][key] += int(trusted.sum().item())
-                                if trusted.any():
-                                    accepted_correct["budget_open"][key] += (
-                                        routed_pred[trusted] == target[trusted]
-                                    ).float().sum().item()
+                                record_accepts("budget_open", key, trusted, chosen, routed_pred, target)
                                 routed_pred, trusted, chosen, core_layers = route_budget_scan_up_predictions(
                                     pred_stack,
                                     verify_stack,
@@ -4019,11 +4196,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     torch.full_like(chosen.float(), float(cfg.loop_steps)),
                                 ).mean().item()
                                 item["avg_core_layers"] += core_layers.mean().item()
-                                accepted_count["budget_scan_up"][key] += int(trusted.sum().item())
-                                if trusted.any():
-                                    accepted_correct["budget_scan_up"][key] += (
-                                        routed_pred[trusted] == target[trusted]
-                                    ).float().sum().item()
+                                record_accepts("budget_scan_up", key, trusted, chosen, routed_pred, target)
                 out["full_teacher_acc"] /= num_batches
                 for policy_name in all_policy_names:
                     for key, item in out["policies"][policy_name].items():
@@ -4036,11 +4209,27 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                             1.0 - item["avg_core_layers"] / full_core_layers
                         ) * 100.0
                         item["accepted_count"] = accepted_count[policy_name][key]
+                        item["fallback_count"] = fallback_count[policy_name][key]
+                        item["accepted_by_budget"] = accepted_by_budget[policy_name][key]
+                        item["accepted_correct_by_budget"] = accepted_correct_by_budget[policy_name][key]
                         if accepted_count[policy_name][key] > 0:
                             item["accepted_precision"] = (
                                 accepted_correct[policy_name][key] / accepted_count[policy_name][key]
                             )
                             item["false_accept_rate"] = 1.0 - item["accepted_precision"]
+                            item["accepted_share_by_budget"] = [
+                                count / accepted_count[policy_name][key]
+                                for count in accepted_by_budget[policy_name][key]
+                            ]
+                        item["accepted_precision_by_budget"] = [
+                            (
+                                accepted_correct_by_budget[policy_name][key][budget]
+                                / accepted_by_budget[policy_name][key][budget]
+                            )
+                            if accepted_by_budget[policy_name][key][budget] > 0
+                            else None
+                            for budget in range(cfg.max_correct + 1)
+                        ]
                 return out
 
             def collect_router_records(num_batches: int):
@@ -5471,6 +5660,10 @@ if __name__ == "__main__":
             "dry_strathop_polish2_joint_halt_reuse",
             "dry_strathop_polish2_joint_halt_stability",
             "dry_strathop_polish2_joint_halt_stability_reuse",
+            "dry_strathop_polish2_joint_halt_quality",
+            "dry_strathop_polish2_joint_halt_quality_reuse",
+            "dry_strathop_polish2_joint_halt_slo",
+            "dry_strathop_polish2_joint_halt_slo_reuse",
             "dry_sweep",
             "dry_sweep_reuse",
             "retrofit_probe",
@@ -5549,6 +5742,30 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_polish2_joint_halt_reuse_highval",
             "core3_8n4h_strathop_joint_halt_stability_reuse_highval",
             "core3_8n4h_strathop_polish2_joint_halt_stability_reuse_highval",
+            "core3_8n4h_strathop_joint_halt_quality",
+            "core3_8n4h_strathop_polish2_joint_halt_quality",
+            "core3_8n4h_strathop_joint_halt_quality_reuse",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_reuse",
+            "core3_8n4h_strathop_joint_halt_quality_reuse_highval",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_reuse_highval",
+            "core3_8n4h_strathop_joint_halt_quality_stability",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_stability",
+            "core3_8n4h_strathop_joint_halt_quality_stability_reuse",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse",
+            "core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse_highval",
+            "core3_8n4h_strathop_joint_halt_slo",
+            "core3_8n4h_strathop_polish2_joint_halt_slo",
+            "core3_8n4h_strathop_joint_halt_slo_reuse",
+            "core3_8n4h_strathop_polish2_joint_halt_slo_reuse",
+            "core3_8n4h_strathop_joint_halt_slo_reuse_highval",
+            "core3_8n4h_strathop_polish2_joint_halt_slo_reuse_highval",
+            "core3_8n4h_strathop_joint_halt_slo_stability",
+            "core3_8n4h_strathop_polish2_joint_halt_slo_stability",
+            "core3_8n4h_strathop_joint_halt_slo_stability_reuse",
+            "core3_8n4h_strathop_polish2_joint_halt_slo_stability_reuse",
+            "core3_8n4h_strathop_joint_halt_slo_stability_reuse_highval",
+            "core3_8n4h_strathop_polish2_joint_halt_slo_stability_reuse_highval",
             "core3_8n4h_strathop_ablate_no_adapter",
             "core3_8n4h_strathop_ablate_no_distill",
             "core3_8n4h_strathop_ablate_no_verifier",
@@ -5596,6 +5813,10 @@ if __name__ == "__main__":
         "dry_strathop_polish2_joint_halt_reuse",
         "dry_strathop_polish2_joint_halt_stability",
         "dry_strathop_polish2_joint_halt_stability_reuse",
+        "dry_strathop_polish2_joint_halt_quality",
+        "dry_strathop_polish2_joint_halt_quality_reuse",
+        "dry_strathop_polish2_joint_halt_slo",
+        "dry_strathop_polish2_joint_halt_slo_reuse",
         "dry_sweep",
         "dry_sweep_reuse",
     ):

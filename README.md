@@ -128,6 +128,26 @@ result, check the audit gates:
 
 `JUMPREC_RESULTS.md` is the source of record for run history and interpretation.
 `JUMPREC_NEXT_STEPS.md` tracks the current research queue.
+`experiments/CHECKPOINT_MANIFEST.md` records the active predecessor checkpoint
+dependencies so reuse/audit modes are reproducible from a cleaner checkout.
+
+## Local Checks
+
+The runner is still a research script, but the repo now has a small standard
+library test suite for active mode resolution and joint-halting guardrails:
+
+```powershell
+python -m py_compile .\run_recurrent_smol.py
+python -m unittest discover -s tests
+```
+
+Dry modes use a fake model and short training schedules to catch wiring errors
+before launching Modal jobs:
+
+```powershell
+python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality --local
+python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_slo --local
+```
 
 ## Scaling Constraint
 
@@ -156,5 +176,7 @@ The execution strategy will probably differ by scale:
 - `JUMPREC_NEXT_STEPS.md`: current research queue.
 - `JUMPREC_ARTIFACT_AUDIT.md`: artifact and claim-safety checklist.
 - `experiments/`: launch helpers and orchestration notes.
+- `experiments/CHECKPOINT_MANIFEST.md`: active checkpoint prerequisites.
 - `jumprec/`: staging area for a future general-use package.
+- `tests/`: lightweight configuration and guardrail tests.
 - `requirements.txt`: Python package dependencies.
