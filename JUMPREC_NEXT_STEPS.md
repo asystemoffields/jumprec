@@ -477,6 +477,25 @@ does not solve the deployable one-candidate controller problem. The next route
 idea should change training: agreement distillation into the candidate/halting
 objective, not another post-hoc selector wrapped around the same scores.
 
+Update from the agreement-distillation pass: `*_joint_halt_quality_agdistill`
+is a clean negative result. It added adjacent-budget/full-teacher KL
+distillation and an agreement-shaped route-risk term, but high-validation
+utility landed at 99.618% and 2.94 / 18 counted core layers. That is slightly
+worse than corrected quality utility and still behind true agreement. The
+per-budget acceptance traces also falsify the idea that the remaining problem
+is simply final-budget avoidance; the route accepts c3 rarely but nonzero, and
+most of the residual false accepts are earlier candidates that agreement
+filters more sharply.
+
+Update from the quality-stability pass: `*_joint_halt_quality_stability` is a
+small refinement, not an unblock. It combines the corrected quality objective
+with a jointly trained stability head fed into utility. High-validation utility
+reaches 99.628% at 2.87 / 18 under the speed selector, and 99.705% at 3.03 /
+18 under the teacher-plus-0.2pp selector. This is competitive with the best
+deployable utility branch so far, but true agreement remains ahead at 99.711%
+/ 2.71 and 99.748% / 2.79 for the same selector scenarios. Treat it as a useful
+checkpoint family, not as the road out.
+
 ## Useful Commands
 
 Run a Modal job:
@@ -554,12 +573,17 @@ Immediate router pivot:
    the stability target but did not change the utility frontier.
 7. Do not spend more mainline effort on no-training per-budget threshold
    selection; it collapsed to the scalar low-threshold utility route.
-8. Keep `agree_then_utility_099` as a diagnostic/reference hybrid only. It
+8. Treat `quality_agdistill` as a falsified objective branch unless a new
+   diagnostic shows that the route-risk term was mis-scaled rather than
+   conceptually weak.
+9. Treat `quality_stability` as the best current deployable checkpoint family
+   for high-quality utility audits, but not as a promoted agreement replacement.
+10. Keep `agree_then_utility_099` as a diagnostic/reference hybrid only. It
    nearly tracks agreement, but it is not the scalable one-candidate answer.
-9. Keep true agreement as the quality reference and no-agreement/utility as the
+11. Keep true agreement as the quality reference and no-agreement/utility as the
    speed-shape reference; a new mode only matters if it lands between them in
    the right direction.
-10. If seed 42 or 202 fail, inspect whether the failure is candidate
+12. If seed 42 or 202 fail, inspect whether the failure is candidate
    degradation, over-acceptance, fallback overuse, or utility calibration before
    adding a new mechanism.
 
@@ -582,6 +606,11 @@ the obvious literature-adjacent deployable agreement substitute; it trained
 successfully but did not improve the frontier. Per-budget utility thresholding
 and agreement/utility hybrids also failed to produce a deployable substitute:
 the best hybrid nearly tracks agreement only because it still uses agreement.
+Agreement-distilled quality training and quality-plus-joint-stability training
+also failed to close the frontier. Quality-stability is the best current
+deployable high-quality branch, but it still trails true agreement while using
+more counted core at the same selector scenarios.
+
 The next research step should either:
 
 1. harden/refactor the runner enough that new router ideas can be tested without

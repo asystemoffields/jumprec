@@ -3351,3 +3351,103 @@ not repair that. The next viable path is objective-level agreement
 distillation: train the candidate trajectory and halting score so the
 one-candidate path internalizes what adjacent-budget agreement is currently
 checking.
+
+## 2026-04-27 - agreement-distilled quality objective audit
+
+The next attempt moved agreement supervision into the joint objective instead
+of adding another post-hoc selector. `*_joint_halt_quality_agdistill` adds two
+terms to the corrected quality branch:
+
+- adjacent-budget/full-teacher distribution distillation for candidate logits;
+- an agreement-shaped route risk that penalizes accepting target-probable but
+  distributionally unstable candidates.
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_agdistill --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_agdistill --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_agdistill --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_agdistill_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_agdistill_reuse_highval --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_agdistill_reuse_highval --seed 42
+```
+
+High-validation means over seeds 101, 202, and repaired polish2 42:
+
+| Selector | Utility Acc | Utility Core | Agreement Acc | Agreement Core | Agreement-then-Utility 0.99 Acc | Agreement-then-Utility 0.99 Core |
+|---|---:|---:|---:|---:|---:|---:|
+| Speed | 99.618% | 2.94 / 18 | 99.668% | 2.71 / 18 | 99.664% | 2.71 / 18 |
+
+Selected speed-point utility by seed:
+
+| Seed | Teacher | Utility Acc | Utility Core | Agreement Acc | Agreement Core | Utility accepted share c0/c1/c2/c3 |
+|---:|---:|---:|---:|---:|---:|---|
+| 101 | 99.713% | 99.707% | 2.32 / 18 | 99.835% | 2.25 / 18 | 59.2% / 38.9% / 1.8% / 0.1% |
+| 202 | 99.530% | 99.652% | 3.32 / 18 | 99.670% | 2.99 / 18 | 35.4% / 54.9% / 9.4% / 0.3% |
+| 42 | 99.438% | 99.493% | 3.18 / 18 | 99.500% | 2.90 / 18 | 39.1% / 56.8% / 3.4% / 0.7% |
+
+Conclusion:
+
+Agreement distillation is a clean negative result for the current objective.
+It did not improve the deployable one-candidate utility frontier. It also
+falsifies a simple "final budget is still being avoided" story: the selected
+utility route accepts the final correction budget rarely but not never, and the
+remaining false accepts come mostly from budget-1/budget-2 candidates that true
+agreement filters more sharply. The useful lesson is that adjacent-budget
+agreement is checking something not captured by this KL-style trajectory
+matching plus scalar route-risk shaping.
+
+## 2026-04-27 - quality plus jointly trained stability audit
+
+After agreement distillation failed, the next check was the already-scaffolded
+`*_joint_halt_quality_stability` branch. This combines the corrected quality
+joint objective with a jointly trained stability head and feeds the stability
+logit into the utility router. Unlike CATS, the stability feature is trained in
+the joint candidate/halting loop rather than added afterward.
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_stability --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_stability --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_stability --seed 42
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse_highval --seed 42
+```
+
+High-validation selector means:
+
+| Selector | Utility Acc | Utility Core | Agreement Acc | Agreement Core | Utility Gap |
+|---|---:|---:|---:|---:|---:|
+| Speed | 99.628% | 2.87 / 18 | 99.711% | 2.71 / 18 | -0.083 pp |
+| Teacher floor | 99.648% | 2.88 / 18 | 99.711% | 2.71 / 18 | -0.063 pp |
+| Teacher +0.1 pp | 99.687% | 2.99 / 18 | 99.742% | 2.76 / 18 | -0.055 pp |
+| Teacher +0.2 pp | 99.705% | 3.03 / 18 | 99.748% | 2.79 / 18 | -0.043 pp |
+
+Selected speed-point utility by seed:
+
+| Seed | Teacher | Utility Acc | Utility Core | Agreement Acc | Agreement Core | Utility accepted share c0/c1/c2/c3 |
+|---:|---:|---:|---:|---:|---:|---|
+| 101 | 99.713% | 99.762% | 2.31 / 18 | 99.872% | 2.24 / 18 | 59.3% / 38.4% / 2.1% / 0.2% |
+| 202 | 99.530% | 99.695% | 3.26 / 18 | 99.725% | 3.00 / 18 | 35.5% / 56.0% / 7.9% / 0.6% |
+| 42 | 99.438% | 99.426% | 3.04 / 18 | 99.536% | 2.88 / 18 | 38.7% / 58.0% / 2.7% / 0.5% |
+
+Conclusion:
+
+Quality-stability is the best high-quality one-candidate variant by a small
+margin at the teacher-plus selectors, but it is not a road-unblocking result.
+It roughly ties corrected quality at the speed point and narrows the
+teacher-plus gap, yet true agreement still wins on both accuracy and counted
+core. The current answer to the bottleneck is therefore negative: neither
+post-hoc consistency, no-training selector search, agreement-shaped objective
+distillation, nor jointly trained stability has replaced adjacent-budget
+agreement.
+
+Do not promote general LLM application testing yet. The synthetic benchmark
+still supports the JumpRec idea and a teacher-level deployable utility route,
+but the scalable one-candidate controller has not matched the agreement
+frontier. The next serious work should either harden/refactor the experiment
+surface or test a stronger mechanism that changes the candidate trajectory or
+controller supervision more radically than the current auxiliary heads.

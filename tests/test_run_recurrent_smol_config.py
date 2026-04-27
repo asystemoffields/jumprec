@@ -9,8 +9,13 @@ class JointHaltConfigTests(unittest.TestCase):
         cases = [
             ("dry_strathop_polish2_joint_halt_quality", 12.0, 0.08),
             ("dry_strathop_polish2_joint_halt_slo", 8.0, 0.10),
+            ("dry_strathop_polish2_joint_halt_quality_agdistill", 12.0, 0.08),
+            ("dry_strathop_polish2_joint_halt_stability", 6.0, 0.0),
             ("core3_8n4h_strathop_joint_halt_quality", 12.0, 0.08),
+            ("core3_8n4h_strathop_joint_halt_quality_agdistill", 12.0, 0.08),
+            ("core3_8n4h_strathop_joint_halt_quality_stability", 12.0, 0.08),
             ("core3_8n4h_strathop_joint_halt_slo", 8.0, 0.10),
+            ("core3_8n4h_strathop_joint_halt_slo_stability", 8.0, 0.10),
             ("core3_8n4h_strathop_polish2_joint_halt_quality_reuse_highval", 12.0, 0.08),
             ("core3_8n4h_strathop_polish2_joint_halt_slo_reuse_highval", 8.0, 0.10),
         ]
@@ -22,6 +27,12 @@ class JointHaltConfigTests(unittest.TestCase):
                 self.assertEqual(cfg.joint_halt_agreement_bce_weight, agreement_weight)
                 self.assertGreater(cfg.joint_halt_candidate_ce_weight, 0.0)
                 self.assertGreater(cfg.joint_halt_candidate_distill_weight, 0.0)
+                if "_agdistill" in mode:
+                    self.assertGreater(cfg.joint_halt_agreement_distill_weight, 0.0)
+                    self.assertGreater(cfg.joint_halt_agreement_route_weight, 0.0)
+                if "_stability" in mode:
+                    self.assertTrue(cfg.use_stability_head)
+                    self.assertTrue(cfg.utility_use_stability_feature)
 
     def test_reuse_modes_load_matching_objective_family(self):
         cases = [
@@ -34,8 +45,16 @@ class JointHaltConfigTests(unittest.TestCase):
                 "core3_8n4h_strathop_joint_halt_slo_seed{seed}",
             ),
             (
+                "core3_8n4h_strathop_joint_halt_quality_agdistill_reuse_highval",
+                "core3_8n4h_strathop_joint_halt_quality_agdistill_seed{seed}",
+            ),
+            (
                 "core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse_highval",
                 "core3_8n4h_strathop_polish2_joint_halt_quality_stability_seed{seed}",
+            ),
+            (
+                "core3_8n4h_strathop_joint_halt_slo_stability_reuse_highval",
+                "core3_8n4h_strathop_joint_halt_slo_stability_seed{seed}",
             ),
         ]
         for mode, load_tag in cases:
@@ -107,6 +126,8 @@ class JointHaltConfigTests(unittest.TestCase):
     def test_agreement_aux_does_not_mark_final_budget_unsafe(self):
         source = inspect.getsource(smol.run_experiment)
         self.assertIn("def utility_router_agreement_bce", source)
+        self.assertIn("def joint_halt_agreement_distill_loss", source)
+        self.assertIn("def candidate_agreement_prob_stack", source)
         self.assertIn("weights[-1] = 0.0", source)
         self.assertIn("stable_target[-1] = (pred_stack[-1] == full_pred).float()", source)
 

@@ -136,6 +136,8 @@ class Config:
     joint_halt_verifier_bce_weight: float = 0.10
     joint_halt_stability_weight: float = 0.05
     joint_halt_agreement_bce_weight: float = 0.0
+    joint_halt_agreement_distill_weight: float = 0.0
+    joint_halt_agreement_route_weight: float = 0.0
     joint_halt_false_accept_weight_max: float = 0.0
     joint_halt_cost_weight_min: float = -1.0
     joint_halt_cost_weight_max: float = -1.0
@@ -192,6 +194,8 @@ def config_for_mode(mode: str) -> Config:
         "dry_strathop_polish2_joint_halt_stability_reuse",
         "dry_strathop_polish2_joint_halt_quality",
         "dry_strathop_polish2_joint_halt_quality_reuse",
+        "dry_strathop_polish2_joint_halt_quality_agdistill",
+        "dry_strathop_polish2_joint_halt_quality_agdistill_reuse",
         "dry_strathop_polish2_joint_halt_quality_cats",
         "dry_strathop_polish2_joint_halt_quality_cats_reuse",
         "dry_strathop_polish2_joint_halt_slo",
@@ -663,10 +667,12 @@ def config_for_mode(mode: str) -> Config:
             "dry_strathop_polish2_joint_halt",
             "dry_strathop_polish2_joint_halt_stability",
             "dry_strathop_polish2_joint_halt_quality",
+            "dry_strathop_polish2_joint_halt_quality_agdistill",
             "dry_strathop_polish2_joint_halt_slo",
         ):
             use_joint_stability = mode.endswith("_stability")
             use_quality_objective = "_quality" in mode
+            use_agreement_distill = "_agdistill" in mode
             use_slo_objective = "_slo" in mode
             cfg.n_nodes = 8
             cfg.max_hops = 4
@@ -685,6 +691,8 @@ def config_for_mode(mode: str) -> Config:
             cfg.checkpoint_tag = (
                 "dry_strathop_polish2_joint_halt_stability_seed{seed}"
                 if use_joint_stability
+                else "dry_strathop_polish2_joint_halt_quality_agdistill_seed{seed}"
+                if use_agreement_distill
                 else "dry_strathop_polish2_joint_halt_quality_seed{seed}"
                 if use_quality_objective
                 else "dry_strathop_polish2_joint_halt_slo_seed{seed}"
@@ -705,6 +713,9 @@ def config_for_mode(mode: str) -> Config:
                 cfg.joint_halt_candidate_distill_weight = 0.15
                 cfg.joint_halt_verifier_bce_weight = 0.08
                 cfg.joint_halt_agreement_bce_weight = 0.08
+            if use_agreement_distill:
+                cfg.joint_halt_agreement_distill_weight = 0.10
+                cfg.joint_halt_agreement_route_weight = 0.75
             if use_slo_objective:
                 cfg.utility_false_accept_weight = 8.0
                 cfg.utility_cost_weight = 0.12
@@ -722,10 +733,12 @@ def config_for_mode(mode: str) -> Config:
             "dry_strathop_polish2_joint_halt_reuse",
             "dry_strathop_polish2_joint_halt_stability_reuse",
             "dry_strathop_polish2_joint_halt_quality_reuse",
+            "dry_strathop_polish2_joint_halt_quality_agdistill_reuse",
             "dry_strathop_polish2_joint_halt_slo_reuse",
         ):
             use_joint_stability = mode.endswith("_stability_reuse")
             use_quality_objective = "_quality" in mode
+            use_agreement_distill = "_agdistill" in mode
             use_slo_objective = "_slo" in mode
             cfg.n_nodes = 8
             cfg.max_hops = 4
@@ -742,6 +755,8 @@ def config_for_mode(mode: str) -> Config:
             cfg.checkpoint_tag = (
                 "dry_strathop_polish2_joint_halt_stability_seed{seed}"
                 if use_joint_stability
+                else "dry_strathop_polish2_joint_halt_quality_agdistill_seed{seed}"
+                if use_agreement_distill
                 else "dry_strathop_polish2_joint_halt_quality_seed{seed}"
                 if use_quality_objective
                 else "dry_strathop_polish2_joint_halt_slo_seed{seed}"
@@ -762,6 +777,9 @@ def config_for_mode(mode: str) -> Config:
                 cfg.joint_halt_candidate_distill_weight = 0.15
                 cfg.joint_halt_verifier_bce_weight = 0.08
                 cfg.joint_halt_agreement_bce_weight = 0.08
+            if use_agreement_distill:
+                cfg.joint_halt_agreement_distill_weight = 0.10
+                cfg.joint_halt_agreement_route_weight = 0.75
             if use_slo_objective:
                 cfg.utility_false_accept_weight = 8.0
                 cfg.utility_cost_weight = 0.12
@@ -1725,6 +1743,12 @@ def config_for_mode(mode: str) -> Config:
         "core3_8n4h_strathop_polish2_joint_halt_quality_reuse",
         "core3_8n4h_strathop_joint_halt_quality_reuse_highval",
         "core3_8n4h_strathop_polish2_joint_halt_quality_reuse_highval",
+        "core3_8n4h_strathop_joint_halt_quality_agdistill",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_agdistill",
+        "core3_8n4h_strathop_joint_halt_quality_agdistill_reuse",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_agdistill_reuse",
+        "core3_8n4h_strathop_joint_halt_quality_agdistill_reuse_highval",
+        "core3_8n4h_strathop_polish2_joint_halt_quality_agdistill_reuse_highval",
         "core3_8n4h_strathop_joint_halt_quality_stability",
         "core3_8n4h_strathop_polish2_joint_halt_quality_stability",
         "core3_8n4h_strathop_joint_halt_quality_stability_reuse",
@@ -1749,6 +1773,7 @@ def config_for_mode(mode: str) -> Config:
         is_highval_reuse = mode.endswith("_reuse_highval")
         use_joint_stability = "_stability" in mode
         use_quality_objective = "_quality" in mode
+        use_agreement_distill = "_agdistill" in mode
         use_slo_objective = "_slo" in mode
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -1768,6 +1793,8 @@ def config_for_mode(mode: str) -> Config:
             reuse_tag = (
                 f"{family_prefix}_joint_halt_quality_stability_seed{{seed}}"
                 if use_joint_stability
+                else f"{family_prefix}_joint_halt_quality_agdistill_seed{{seed}}"
+                if use_agreement_distill
                 else f"{family_prefix}_joint_halt_quality_seed{{seed}}"
             )
         elif use_slo_objective:
@@ -1813,6 +1840,9 @@ def config_for_mode(mode: str) -> Config:
             cfg.joint_halt_candidate_distill_weight = 0.15
             cfg.joint_halt_verifier_bce_weight = 0.08
             cfg.joint_halt_agreement_bce_weight = 0.08
+        if use_agreement_distill:
+            cfg.joint_halt_agreement_distill_weight = 0.10
+            cfg.joint_halt_agreement_route_weight = 0.75
         if use_slo_objective:
             cfg.utility_false_accept_weight = 8.0
             cfg.utility_cost_weight = 0.12
@@ -2506,6 +2536,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         hops,
         false_accept_weight: float | None = None,
         cost_weight: float | None = None,
+        agreement_prob_stack=None,
+        agreement_route_weight: float = 0.0,
     ):
         if false_accept_weight is None:
             false_accept_weight = float(cfg.utility_false_accept_weight)
@@ -2522,6 +2554,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         for corrections in range(cfg.max_correct + 1):
             route_prob = survival * accept_prob[corrections]
             wrong_prob = (1.0 - target_prob[corrections]).clamp(0.0, 1.0)
+            if agreement_prob_stack is not None and agreement_route_weight > 0.0:
+                stability_penalty = target_prob[corrections] * (
+                    1.0 - agreement_prob_stack[corrections].clamp(0.0, 1.0)
+                )
+                wrong_prob = (
+                    wrong_prob + float(agreement_route_weight) * stability_penalty
+                ).clamp(0.0, 1.0)
             core_frac = (float(cfg.jump_layers) + float(corrections * cfg.core_layers)) / full_core_layers
             expected_wrong = expected_wrong + route_prob * wrong_prob * float(false_accept_weight)
             expected_core = expected_core + route_prob * core_frac
@@ -2531,6 +2570,15 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         expected_core = expected_core + survival
         route_loss = expected_wrong + float(cost_weight) * expected_core
         return (route_loss * weights).sum() / weights.sum().clamp_min(1e-6), expected_wrong, expected_core
+
+    def candidate_agreement_prob_stack(logits_stack, soft_teacher):
+        probs = F.softmax(logits_stack, dim=-1)
+        agreement_prob = torch.zeros_like(probs[:, :, 0])
+        if cfg.max_correct > 0:
+            next_probs = probs[1:].detach()
+            agreement_prob[:-1] = (probs[:-1] * next_probs).sum(dim=-1)
+        agreement_prob[-1] = (probs[-1] * soft_teacher.detach()).sum(dim=-1)
+        return agreement_prob
 
     def utility_router_aux_bce(accept_logits, correct_stack, hops):
         if cfg.utility_correctness_bce_weight <= 0.0:
@@ -2557,6 +2605,34 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         weights = weights * torch.where(safe_target > 0.5, torch.ones_like(safe_target), false_accept_weight)
         losses = F.binary_cross_entropy_with_logits(accept_logits, safe_target, reduction="none")
         return float(cfg.joint_halt_agreement_bce_weight) * (losses * weights).sum() / weights.sum().clamp_min(1e-6)
+
+    def joint_halt_agreement_distill_loss(logits_stack, soft_teacher, target, hops):
+        if cfg.joint_halt_agreement_distill_weight <= 0.0:
+            return logits_stack.new_tensor(0.0)
+        weights = example_weights(hops)
+        losses = []
+        for corrections in range(cfg.max_correct):
+            with torch.no_grad():
+                next_logits = logits_stack[corrections + 1].detach()
+                next_target = F.softmax(next_logits, dim=-1)
+                next_correct = (next_logits.argmax(dim=-1) == target).float()
+            pair_loss = F.kl_div(
+                F.log_softmax(logits_stack[corrections], dim=-1),
+                next_target,
+                reduction="none",
+            ).sum(dim=-1)
+            pair_weights = weights * next_correct
+            losses.append((pair_loss * pair_weights).sum() / pair_weights.sum().clamp_min(1e-6))
+        with torch.no_grad():
+            teacher_correct = (soft_teacher.argmax(dim=-1) == target).float()
+        final_loss = F.kl_div(
+            F.log_softmax(logits_stack[-1], dim=-1),
+            soft_teacher.detach(),
+            reduction="none",
+        ).sum(dim=-1)
+        final_weights = weights * teacher_correct
+        losses.append((final_loss * final_weights).sum() / final_weights.sum().clamp_min(1e-6))
+        return float(cfg.joint_halt_agreement_distill_weight) * torch.stack(losses).mean()
 
     def consistency_bce_with_logits(consistency_logits, stable_target, hops):
         weights = example_weights(hops).view(1, -1).expand_as(consistency_logits)
@@ -3255,6 +3331,11 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         float(cfg.joint_halt_cost_weight_min),
                         float(cfg.joint_halt_cost_weight_max),
                     )
+                agreement_prob_stack = (
+                    candidate_agreement_prob_stack(logits_stack, soft_teacher)
+                    if cfg.joint_halt_agreement_route_weight > 0.0
+                    else None
+                )
                 route_loss, expected_wrong, expected_core = joint_halt_expected_loss(
                     utility_logits,
                     logits_stack,
@@ -3263,6 +3344,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     hops,
                     false_accept_weight=route_false_accept_weight,
                     cost_weight=route_cost_weight,
+                    agreement_prob_stack=agreement_prob_stack,
+                    agreement_route_weight=float(cfg.joint_halt_agreement_route_weight),
                 )
                 ce_loss = torch.stack(
                     [weighted_ce(logits_stack[c], target, hops) for c in range(cfg.max_correct + 1)]
@@ -3283,6 +3366,12 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     pred_stack,
                     hops,
                 )
+                agreement_distill = joint_halt_agreement_distill_loss(
+                    logits_stack,
+                    soft_teacher,
+                    target,
+                    hops,
+                )
                 joint_loss = (
                     route_loss
                     + float(cfg.joint_halt_candidate_ce_weight) * ce_loss
@@ -3290,6 +3379,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     + float(cfg.joint_halt_verifier_bce_weight) * verifier_loss
                     + aux_bce
                     + agreement_bce
+                    + agreement_distill
                 )
                 stability_loss = utility_logits.new_tensor(0.0)
                 if cfg.use_stability_head and out["stability"] is not None and cfg.joint_halt_stability_weight > 0.0:
@@ -3337,8 +3427,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         f"ce {ce_loss.item():.4f} distill {distill_loss.item():.4f} "
                         f"vf {verifier_loss.item():.4f} aux {aux_bce.item():.4f} "
                         f"agree_aux {agreement_bce.item():.4f} "
+                        f"agree_distill {agreement_distill.item():.4f} "
                         f"stab {stability_loss.item():.4f} "
                         f"wrong {expected_wrong.mean().item():.4f} core {expected_core.mean().item():.4f} "
+                        f"agree_prob {(agreement_prob_stack.mean().item() if agreement_prob_stack is not None else 0.0):.4f} "
                         f"fa_w {route_false_accept_weight:.2f} cost_w {route_cost_weight:.3f} "
                         f"acc {(routed_pred == target).float().mean().item()*100:.1f}% "
                         f"coverage {trusted.float().mean().item()*100:.1f}% "
@@ -6531,6 +6623,8 @@ if __name__ == "__main__":
             "dry_strathop_polish2_joint_halt_stability_reuse",
             "dry_strathop_polish2_joint_halt_quality",
             "dry_strathop_polish2_joint_halt_quality_reuse",
+            "dry_strathop_polish2_joint_halt_quality_agdistill",
+            "dry_strathop_polish2_joint_halt_quality_agdistill_reuse",
             "dry_strathop_polish2_joint_halt_quality_cats",
             "dry_strathop_polish2_joint_halt_quality_cats_reuse",
             "dry_strathop_polish2_joint_halt_slo",
@@ -6619,6 +6713,12 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_polish2_joint_halt_quality_reuse",
             "core3_8n4h_strathop_joint_halt_quality_reuse_highval",
             "core3_8n4h_strathop_polish2_joint_halt_quality_reuse_highval",
+            "core3_8n4h_strathop_joint_halt_quality_agdistill",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_agdistill",
+            "core3_8n4h_strathop_joint_halt_quality_agdistill_reuse",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_agdistill_reuse",
+            "core3_8n4h_strathop_joint_halt_quality_agdistill_reuse_highval",
+            "core3_8n4h_strathop_polish2_joint_halt_quality_agdistill_reuse_highval",
             "core3_8n4h_strathop_joint_halt_quality_cats",
             "core3_8n4h_strathop_polish2_joint_halt_quality_cats",
             "core3_8n4h_strathop_joint_halt_quality_cats_reuse",
@@ -6692,6 +6792,8 @@ if __name__ == "__main__":
         "dry_strathop_polish2_joint_halt_stability_reuse",
         "dry_strathop_polish2_joint_halt_quality",
         "dry_strathop_polish2_joint_halt_quality_reuse",
+        "dry_strathop_polish2_joint_halt_quality_agdistill",
+        "dry_strathop_polish2_joint_halt_quality_agdistill_reuse",
         "dry_strathop_polish2_joint_halt_quality_cats",
         "dry_strathop_polish2_joint_halt_quality_cats_reuse",
         "dry_strathop_polish2_joint_halt_slo",

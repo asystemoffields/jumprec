@@ -53,9 +53,15 @@ top-class margin, max probability, budget id, and hidden-state readout features.
 Routers are not allowed to inspect privileged labels or teacher internals that
 would be unavailable at inference time.
 
-## Routing
+## Routing And Control
 
-The repo currently contains several routing families:
+Routing is the controller layer between the jump candidates and the full-loop
+fallback. It decides how much recurrent compute an example should spend without
+using labels, future teacher states, or any signal that would be missing at
+deployment time.
+
+The controller surface is split into deployable one-candidate policies and
+audit-only reference policies:
 
 - `no_agree`: accepts the first candidate whose verifier and confidence gates
   pass.
@@ -63,7 +69,8 @@ The repo currently contains several routing families:
   same answer. This is a strong quality reference, but it is expensive because
   it runs extra budget candidates.
 - `budget_controller`: predicts a sufficient correction budget from the initial
-  state.
+  state before candidate evaluation. It is the cheapest controller shape, but it
+  has to infer difficulty before seeing candidate confidence.
 - `stability_router`: learns to approximate adjacent-budget agreement.
 - `utility_router`: learns a post-hoc accept/fallback policy from route utility.
 - `joint_halt`: trains the candidate path and utility halting head together.
@@ -79,17 +86,33 @@ The repo currently contains several routing families:
   agreement. These are useful diagnostics, but any policy that depends on true
   agreement still has the agreement path's extra candidate cost.
 
-The active research direction is `joint_halt`. Earlier post-hoc routers learned
-useful signals but did not close the quality/cost gap. Joint halting changes the
-training problem: candidate logits and halting probabilities are optimized
-together against route utility, so candidates can become easier to halt on
-rather than merely being scored after the fact. Recent held-out audits show that
-simple threshold selection, per-budget utility thresholds, post-hoc consistency
-heads, and agreement/utility hybrids do not fully replace true agreement. The
-remaining controller problem is to train a deployable one-candidate substitute
-for agreement, not just to calibrate a frozen score.
+`joint_halt` is the main deployable controller family. Earlier post-hoc routers
+score candidates after the jump model is already trained. Joint halting changes
+the training problem: candidate logits and halting probabilities are optimized
+together against route utility, so the candidate path can learn states that are
+easier to accept safely. Its active variants differ mainly in what they ask the
+controller to optimize:
 
-## Training Flow
+- `joint_halt_quality`: emphasizes avoiding false accepts, even at higher
+  fallback cost.
+- `joint_halt_slo`: samples cost and false-accept weights so a single
+  checkpoint can serve multiple operating points.
+- `joint_halt_quality_cats`: freezes a quality checkpoint and trains a cheap
+  consistency head as a one-candidate proxy for agreement.
+- `joint_halt_quality_agdistill`: distills adjacent-budget and full-teacher
+  agreement into the candidate logits and route-risk term during joint training.
+- `joint_halt_quality_stability` / `joint_halt_slo_stability`: jointly train a
+  stability head and feed that feature back into the utility router.
+
+The budget controller therefore fits as the lowest-overhead member of a broader
+control stack: it chooses a compute budget up front, while utility and
+joint-halting controllers can inspect candidate confidence before deciding to
+accept or fall back. At small scale the difference is mostly counted core
+layers. At larger scale it becomes an execution-planning problem: every extra
+candidate, dynamic branch, or fallback split can create latency and batching
+overhead even when the counted model FLOPs look favorable.
+
+## Training And Evaluation Flow
 
 Most serious runs follow this sequence:
 
@@ -108,6 +131,13 @@ can be reinterpreted at different quality/cost operating points. The runner
 records speed-biased, tighter-drop, teacher-floor, and teacher-plus selector
 views, plus per-policy acceptance precision and acceptance share by correction
 budget.
+
+Mode names encode this flow. A mode ending in `_reuse` or `_reuse_highval`
+loads an existing checkpoint and performs evaluation only. A mode with
+`quality`, `slo`, `cats`, `agdistill`, or `stability` selects the corresponding
+controller objective described above. Full Modal runs use real SmolLM2
+checkpoints from the `/results` volume; dry modes use tiny fake-model schedules
+to catch configuration and training-loop wiring errors quickly.
 
 ## Current Experiment Setup
 
@@ -162,7 +192,9 @@ before launching Modal jobs:
 
 ```powershell
 python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality --local
+python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality_agdistill --local
 python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_slo --local
+python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_stability --local
 python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality_cats --local
 python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality_cats_reuse --local
 ```
@@ -174,7 +206,7 @@ The recurrent core, jump module, verifier, halting policy, and fallback path
 need to preserve the same conceptual contract from small models through larger
 local models.
 
-The execution strategy will probably differ by scale:
+The execution strategy differs by scale:
 
 - `135M`: serial subset routing is acceptable for fast iteration and exposes
   the latency/quality tradeoff.
@@ -183,6 +215,12 @@ The execution strategy will probably differ by scale:
 - very large dense or MoE models: the router must skip expensive blocks or
   experts cleanly, avoid extra cross-device communication, and preferably use a
   fused or static-enough execution path.
+
+This is why the agreement path is treated as a reference rather than the final
+architecture. It often gives the best quality frontier on the synthetic task,
+but it does so by evaluating neighboring candidates. A scalable controller has
+to capture that reliability signal with one candidate, a small head, or an
+up-front budget choice that does not fragment inference.
 
 ## Files
 

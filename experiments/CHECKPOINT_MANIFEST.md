@@ -29,6 +29,9 @@ Training modes load the teacher family and save a reusable joint-halt checkpoint
 | `*_joint_halt_stability` | matching teacher | `*_joint_halt_stability_seed{seed}` |
 | `*_joint_halt_quality` | matching teacher | `*_joint_halt_quality_seed{seed}` |
 | `*_joint_halt_slo` | matching teacher | `*_joint_halt_slo_seed{seed}` |
+| `*_joint_halt_quality_agdistill` | matching teacher | `*_joint_halt_quality_agdistill_seed{seed}` |
+| `*_joint_halt_quality_stability` | matching teacher | `*_joint_halt_quality_stability_seed{seed}` |
+| `*_joint_halt_slo_stability` | matching teacher | `*_joint_halt_slo_stability_seed{seed}` |
 | `*_joint_halt_quality_cats` | `*_joint_halt_quality_seed{seed}` | `*_joint_halt_quality_cats_seed{seed}` |
 
 Reuse modes load the corresponding joint-halt checkpoint, skip additional
@@ -44,6 +47,16 @@ corrected quality joint-halt checkpoint, freeze the existing teacher/JumpRec
 path, train only `consistency_heads`, and save a reusable
 `*_joint_halt_quality_cats_seed{seed}` checkpoint. Their reuse modes load that
 CATS checkpoint directly.
+
+The agreement-distilled quality modes are full joint-halt training runs. They
+load the matching teacher, train candidate/halting paths with adjacent-budget
+and full-teacher agreement distillation, and save
+`*_joint_halt_quality_agdistill_seed{seed}`.
+
+The quality/SLO stability modes are also full joint-halt training runs. They
+load the matching teacher, jointly train the stability head with candidate and
+utility objectives, and save either `*_joint_halt_quality_stability_seed{seed}`
+or `*_joint_halt_slo_stability_seed{seed}`.
 
 ## Current Cross-Seed Mapping
 
