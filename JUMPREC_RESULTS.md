@@ -3281,3 +3281,73 @@ This falsifies the simplest CATS-style post-hoc surrogate as the missing
 deployable agreement replacement. The remaining bottleneck is likely in the
 training objective or candidate trajectory itself, not in adding a separate
 stable/unstable head after the quality checkpoint.
+
+## 2026-04-27 - no-training controller selection audit
+
+After CATS failed to move the frontier, the next check was whether the existing
+corrected quality checkpoints already contain enough signal for better
+held-out controller selection without retraining. The runner now evaluates:
+
+- `utility_per_budget`: separate utility thresholds by correction budget.
+- `utility_guarded_per_budget`: the same search with margin/max-prob guards.
+- `utility_per_budget_monotone`: a monotone version that keeps earlier budgets
+  at least as strict as later budgets.
+- `utility_then_agree_*`: direct utility accept at the selected threshold,
+  otherwise true agreement confirmation above a fixed utility floor.
+- `agree_then_utility_*`: true agreement with a separate high utility direct
+  accept floor at 0.90, 0.95, or 0.99.
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_reuse_highval --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_reuse_highval --seed 42
+```
+
+High-validation means over seeds 101, 202, and repaired polish2 42:
+
+| Selector | Policy | Final Acc | Avg Core |
+|---|---|---:|---:|
+| Speed | Agreement | 99.740% | 2.70 / 18 |
+| Speed | Utility | 99.632% | 2.89 / 18 |
+| Speed | Utility per-budget | 99.646% | 2.88 / 18 |
+| Speed | Utility then agreement | 99.585% | 2.69 / 18 |
+| Speed | Agreement then utility 0.99 | 99.717% | 2.70 / 18 |
+| Teacher floor | Agreement | 99.746% | 2.71 / 18 |
+| Teacher floor | Utility | 99.658% | 2.92 / 18 |
+| Teacher floor | Utility per-budget | 99.646% | 2.88 / 18 |
+| Teacher floor | Utility then agreement | 99.646% | 2.71 / 18 |
+| Teacher floor | Agreement then utility 0.99 | 99.721% | 2.71 / 18 |
+| Teacher +0.1 pp | Agreement | 99.762% | 2.75 / 18 |
+| Teacher +0.1 pp | Utility | 99.681% | 3.03 / 18 |
+| Teacher +0.1 pp | Agreement then utility 0.99 | 99.740% | 2.75 / 18 |
+| Teacher +0.2 pp | Agreement | 99.766% | 2.79 / 18 |
+| Teacher +0.2 pp | Utility | 99.699% | 3.06 / 18 |
+| Teacher +0.2 pp | Agreement then utility 0.99 | 99.746% | 2.77 / 18 |
+
+Findings:
+
+- Per-budget utility threshold search chose `[0.05, 0.05, 0.05, 0.05]` on all
+  three seeds. This falsifies the idea that the current gap is mostly a
+  per-budget operating-point issue.
+- Guarded and monotone per-budget variants collapsed to the same choice.
+- `utility_then_agree_000` can save counted core by over-accepting low-threshold
+  utility candidates, but it loses accuracy and is not a viable promoted route.
+- Decoupling the thresholds is better: `agree_then_utility_099` tracks true
+  agreement closely, often within 0.02 to 0.03 percentage points at similar
+  counted core.
+- That hybrid still depends on true adjacent-budget agreement, so it is not the
+  deployable one-candidate substitute needed for scaling. It is a useful
+  diagnostic/reference policy, not the road out.
+
+Conclusion:
+
+The road is now unblocked conceptually, but not by a new promoted controller.
+The evidence points away from more no-training threshold tricks. True agreement
+is still the frontier; cheap utility has useful ranking signal but does not
+separate safe accepts sharply enough; cheap post-hoc stability/consistency did
+not repair that. The next viable path is objective-level agreement
+distillation: train the candidate trajectory and halting score so the
+one-candidate path internalizes what adjacent-budget agreement is currently
+checking.

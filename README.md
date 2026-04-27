@@ -72,12 +72,22 @@ The repo currently contains several routing families:
   budget, with the final budget trained against the full teacher prediction.
   It is deployment-available because inference reads one candidate plus the
   consistency/utility heads, rather than running the adjacent budget.
+- `utility_per_budget`: an audit-only held-out selector that learns separate
+  utility thresholds for each correction budget without additional training.
+- `utility_then_agree` and `agree_then_utility`: hybrid audit policies that
+  test whether utility confidence can reduce or condition adjacent-budget
+  agreement. These are useful diagnostics, but any policy that depends on true
+  agreement still has the agreement path's extra candidate cost.
 
 The active research direction is `joint_halt`. Earlier post-hoc routers learned
 useful signals but did not close the quality/cost gap. Joint halting changes the
 training problem: candidate logits and halting probabilities are optimized
 together against route utility, so candidates can become easier to halt on
-rather than merely being scored after the fact.
+rather than merely being scored after the fact. Recent held-out audits show that
+simple threshold selection, per-budget utility thresholds, post-hoc consistency
+heads, and agreement/utility hybrids do not fully replace true agreement. The
+remaining controller problem is to train a deployable one-candidate substitute
+for agreement, not just to calibrate a frozen score.
 
 ## Training Flow
 
@@ -96,7 +106,8 @@ compute because dynamic routing overhead can dominate at larger batch sizes.
 Held-out audits also retain the validation and final threshold curves so a run
 can be reinterpreted at different quality/cost operating points. The runner
 records speed-biased, tighter-drop, teacher-floor, and teacher-plus selector
-views.
+views, plus per-policy acceptance precision and acceptance share by correction
+budget.
 
 ## Current Experiment Setup
 

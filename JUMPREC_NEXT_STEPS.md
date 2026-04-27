@@ -466,6 +466,17 @@ mostly shadows plain utility, and true agreement remains better on both quality
 and counted core. Treat this as a useful falsified branch, not the next
 promotion candidate.
 
+Update from the no-training controller selection pass: per-budget utility
+thresholds, guarded/monotone per-budget utility, `utility_then_agree_*`, and
+`agree_then_utility_*` were added to the held-out audit and tested on the
+corrected quality highval set. Per-budget utility chose the same low threshold
+for every correction budget on every seed, so the remaining gap is not a simple
+budget-specific thresholding problem. `agree_then_utility_099` comes closest to
+true agreement, but it still uses true adjacent-budget agreement and therefore
+does not solve the deployable one-candidate controller problem. The next route
+idea should change training: agreement distillation into the candidate/halting
+objective, not another post-hoc selector wrapped around the same scores.
+
 ## Useful Commands
 
 Run a Modal job:
@@ -480,8 +491,8 @@ Safer background launch on Windows with UTF-8 logs:
 $mode = "core3_8n4h_strathop_verifier_audit"
 $seed = 101
 $log = "modal_recurrent_smol_${mode}_seed${seed}_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-$cmd = "Set-Location -LiteralPath 'C:\Users\power\Documents\SMOKE'; `$env:PYTHONIOENCODING='utf-8'; `$env:PYTHONUTF8='1'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); modal run run_recurrent_smol.py --mode $mode --seed $seed *> '$log'"
-Start-Process -FilePath powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$cmd) -WindowStyle Hidden -PassThru
+$cmd = "chcp 65001 >NUL && set `"PYTHONIOENCODING=utf-8`" && set `"PYTHONUTF8=1`" && modal run .\run_recurrent_smol.py --mode $mode --seed $seed > `"$log`" 2>&1"
+Start-Process -FilePath cmd.exe -ArgumentList @('/c',$cmd) -WindowStyle Hidden -PassThru
 ```
 
 Check running Modal processes:
@@ -541,12 +552,16 @@ Immediate router pivot:
    proxy cost.
 6. Do not spend more mainline effort on the current CATS head alone; it learned
    the stability target but did not change the utility frontier.
-7. Keep true agreement as the quality reference and no-agreement as the speed
-   reference; the new mode only matters if it lands between them in the right
-   direction.
-8. If seed 42 or 202 fail, inspect whether the failure is candidate degradation,
-   over-acceptance, fallback overuse, or utility calibration before adding a new
-   mechanism.
+7. Do not spend more mainline effort on no-training per-budget threshold
+   selection; it collapsed to the scalar low-threshold utility route.
+8. Keep `agree_then_utility_099` as a diagnostic/reference hybrid only. It
+   nearly tracks agreement, but it is not the scalable one-candidate answer.
+9. Keep true agreement as the quality reference and no-agreement/utility as the
+   speed-shape reference; a new mode only matters if it lands between them in
+   the right direction.
+10. If seed 42 or 202 fail, inspect whether the failure is candidate
+   degradation, over-acceptance, fallback overuse, or utility calibration before
+   adding a new mechanism.
 
 ## Current Bottleneck Answer
 
@@ -564,8 +579,10 @@ Do not move to broad/general LLM application testing yet. The project is still
 synthetic-benchmark-positive, but the current deployable router has not matched
 the non-deployable agreement frontier. The CATS-style cheap consistency head was
 the obvious literature-adjacent deployable agreement substitute; it trained
-successfully but did not improve the frontier. The next research step should
-either:
+successfully but did not improve the frontier. Per-budget utility thresholding
+and agreement/utility hybrids also failed to produce a deployable substitute:
+the best hybrid nearly tracks agreement only because it still uses agreement.
+The next research step should either:
 
 1. harden/refactor the runner enough that new router ideas can be tested without
    widening one giant script further; or

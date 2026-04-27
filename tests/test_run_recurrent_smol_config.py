@@ -110,6 +110,15 @@ class JointHaltConfigTests(unittest.TestCase):
         self.assertIn("weights[-1] = 0.0", source)
         self.assertIn("stable_target[-1] = (pred_stack[-1] == full_pred).float()", source)
 
+    def test_utility_controller_audit_policies_are_registered(self):
+        source = inspect.getsource(smol.run_experiment)
+        self.assertIn("utility_then_agree_floors", source)
+        self.assertIn("def route_utility_then_agree_predictions", source)
+        self.assertIn("agree_then_utility_floors", source)
+        self.assertIn("def route_agree_then_utility_predictions", source)
+        self.assertIn("choose_per_budget_utility_thresholds", source)
+        self.assertIn("utility_per_budget", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3724,6 +3724,24 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             )
             utility_policy_defs = [("utility", False), ("utility_guarded", True)] if cfg.use_utility_router else []
             utility_policy_names = [name for name, _ in utility_policy_defs]
+            utility_then_agree_floors = [0.00, 0.30, 0.50]
+            utility_then_agree_policy_names = (
+                [
+                    f"utility_then_agree_{int(confirm_floor * 100):03d}"
+                    for confirm_floor in utility_then_agree_floors
+                ]
+                if cfg.use_utility_router
+                else []
+            )
+            agree_then_utility_floors = [0.90, 0.95, 0.99]
+            agree_then_utility_policy_names = (
+                [
+                    f"agree_then_utility_{int(utility_floor * 100):03d}"
+                    for utility_floor in agree_then_utility_floors
+                ]
+                if cfg.use_utility_router
+                else []
+            )
             consistency_policy_thresholds = [0.50, 0.70, 0.90]
             consistency_policy_names = (
                 [f"utility_cats_{int(threshold * 100):03d}" for threshold in consistency_policy_thresholds]
@@ -3742,6 +3760,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
             all_policy_names += stability_policy_names
             all_policy_names += budget_policy_names
             all_policy_names += utility_policy_names
+            all_policy_names += utility_then_agree_policy_names
+            all_policy_names += agree_then_utility_policy_names
             all_policy_names += consistency_policy_names
             all_policy_names += next_agreement_policy_names
             full_core_layers = float(cfg.loop_steps * cfg.core_layers)
@@ -3931,6 +3951,77 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     accept = (~trusted) & (utility_stack[c] >= threshold)
                     if guarded:
                         accept = accept & (margin_stack[c] >= 0.05) & (max_prob_stack[c] >= 0.45)
+                    chosen = torch.where(accept, torch.full_like(chosen, c), chosen)
+                    routed_pred = torch.where(accept, pred_stack[c], routed_pred)
+                    trusted = trusted | accept
+                core_layers = torch.where(
+                    trusted,
+                    torch.full_like(chosen.float(), float(cfg.jump_layers))
+                    + chosen.float() * float(cfg.core_layers),
+                    torch.full_like(chosen.float(), full_core_layers),
+                )
+                return routed_pred, trusted, chosen, core_layers
+
+            def route_utility_then_agree_predictions(
+                pred_stack,
+                verify_stack,
+                utility_stack,
+                margin_stack,
+                max_prob_stack,
+                agree_stack,
+                full_pred,
+                target,
+                threshold: float,
+                confirm_floor: float,
+            ):
+                trusted = torch.zeros_like(target, dtype=torch.bool)
+                chosen = torch.full_like(target, cfg.loop_steps)
+                routed_pred = full_pred
+                for c in range(cfg.max_correct + 1):
+                    direct = utility_stack[c] >= threshold
+                    confirmed = (
+                        (utility_stack[c] >= confirm_floor)
+                        & (verify_stack[c] >= threshold)
+                        & (margin_stack[c] >= 0.05)
+                        & (max_prob_stack[c] >= 0.45)
+                        & agree_stack[c]
+                    )
+                    accept = (~trusted) & (direct | confirmed)
+                    chosen = torch.where(accept, torch.full_like(chosen, c), chosen)
+                    routed_pred = torch.where(accept, pred_stack[c], routed_pred)
+                    trusted = trusted | accept
+                core_layers = torch.where(
+                    trusted,
+                    torch.full_like(chosen.float(), float(cfg.jump_layers))
+                    + chosen.float() * float(cfg.core_layers),
+                    torch.full_like(chosen.float(), full_core_layers),
+                )
+                return routed_pred, trusted, chosen, core_layers
+
+            def route_agree_then_utility_predictions(
+                pred_stack,
+                verify_stack,
+                utility_stack,
+                margin_stack,
+                max_prob_stack,
+                agree_stack,
+                full_pred,
+                target,
+                threshold: float,
+                utility_floor: float,
+            ):
+                trusted = torch.zeros_like(target, dtype=torch.bool)
+                chosen = torch.full_like(target, cfg.loop_steps)
+                routed_pred = full_pred
+                for c in range(cfg.max_correct + 1):
+                    agreed = (
+                        (verify_stack[c] >= threshold)
+                        & (margin_stack[c] >= 0.05)
+                        & (max_prob_stack[c] >= 0.45)
+                        & agree_stack[c]
+                    )
+                    direct = utility_stack[c] >= utility_floor
+                    accept = (~trusted) & (agreed | direct)
                     chosen = torch.where(accept, torch.full_like(chosen, c), chosen)
                     routed_pred = torch.where(accept, pred_stack[c], routed_pred)
                     trusted = trusted | accept
@@ -4367,6 +4458,64 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     ).mean().item()
                                     item["avg_core_layers"] += core_layers.mean().item()
                                     record_accepts(policy_name, key, trusted, chosen, routed_pred, target)
+                                for policy_name, confirm_floor in zip(
+                                    utility_then_agree_policy_names,
+                                    utility_then_agree_floors,
+                                ):
+                                    routed_pred, trusted, chosen, core_layers = (
+                                        route_utility_then_agree_predictions(
+                                            pred_stack,
+                                            verify_stack,
+                                            utility_stack,
+                                            margin_stack,
+                                            max_prob_stack,
+                                            agree_stack,
+                                            full_pred,
+                                            target,
+                                            threshold,
+                                            confirm_floor,
+                                        )
+                                    )
+                                    item = out["policies"][policy_name][key]
+                                    item["acc"] += (routed_pred == target).float().mean().item()
+                                    item["full_loop_rate"] += (~trusted).float().mean().item()
+                                    item["coverage"] += trusted.float().mean().item()
+                                    item["avg_tail_loops"] += torch.where(
+                                        trusted,
+                                        chosen.float(),
+                                        torch.full_like(chosen.float(), float(cfg.loop_steps)),
+                                    ).mean().item()
+                                    item["avg_core_layers"] += core_layers.mean().item()
+                                    record_accepts(policy_name, key, trusted, chosen, routed_pred, target)
+                                for policy_name, utility_floor in zip(
+                                    agree_then_utility_policy_names,
+                                    agree_then_utility_floors,
+                                ):
+                                    routed_pred, trusted, chosen, core_layers = (
+                                        route_agree_then_utility_predictions(
+                                            pred_stack,
+                                            verify_stack,
+                                            utility_stack,
+                                            margin_stack,
+                                            max_prob_stack,
+                                            agree_stack,
+                                            full_pred,
+                                            target,
+                                            threshold,
+                                            utility_floor,
+                                        )
+                                    )
+                                    item = out["policies"][policy_name][key]
+                                    item["acc"] += (routed_pred == target).float().mean().item()
+                                    item["full_loop_rate"] += (~trusted).float().mean().item()
+                                    item["coverage"] += trusted.float().mean().item()
+                                    item["avg_tail_loops"] += torch.where(
+                                        trusted,
+                                        chosen.float(),
+                                        torch.full_like(chosen.float(), float(cfg.loop_steps)),
+                                    ).mean().item()
+                                    item["avg_core_layers"] += core_layers.mean().item()
+                                    record_accepts(policy_name, key, trusted, chosen, routed_pred, target)
                             if cfg.use_consistency_head and cfg.use_utility_router:
                                 for policy_name, consistency_threshold in zip(
                                     consistency_policy_names,
@@ -4542,6 +4691,8 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     "margin": [],
                     "max_prob": [],
                 }
+                if cfg.use_utility_router:
+                    records["utility"] = []
                 with torch.no_grad():
                     for _ in range(num_batches):
                         input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(
@@ -4574,43 +4725,53 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         records["verify"].append(
                             torch.stack([torch.sigmoid(v) for v in jump_out["verify"]], dim=0).detach().cpu()
                         )
+                        if cfg.use_utility_router:
+                            records["utility"].append(
+                                torch.stack(
+                                    [torch.sigmoid(v) for v in jump_out["utility"]],
+                                    dim=0,
+                                )
+                                .detach()
+                                .cpu()
+                            )
                         records["margin"].append((top2[:, :, 0] - top2[:, :, 1]).detach().cpu())
                         records["max_prob"].append(top2[:, :, 0].detach().cpu())
-                return {
+                out_records = {
                     "full_correct": torch.cat(records["full_correct"], dim=0),
                     "pred_correct": torch.cat(records["pred_correct"], dim=1),
                     "verify": torch.cat(records["verify"], dim=1),
                     "margin": torch.cat(records["margin"], dim=1),
                     "max_prob": torch.cat(records["max_prob"], dim=1),
                 }
+                if cfg.use_utility_router:
+                    out_records["utility"] = torch.cat(records["utility"], dim=1)
+                return out_records
 
-            def evaluate_per_budget_thresholds(records, thresholds_by_budget):
-                full_correct = records["full_correct"].bool()
-                pred_correct = records["pred_correct"].bool()
-                verify = records["verify"]
-                margin = records["margin"]
-                max_prob = records["max_prob"]
-                n = full_correct.numel()
-                trusted = torch.zeros(n, dtype=torch.bool)
-                chosen = torch.full((n,), cfg.loop_steps, dtype=torch.long)
-                routed_correct = full_correct.clone()
-                for c, threshold in enumerate(thresholds_by_budget):
-                    accept = (
-                        (~trusted)
-                        & (verify[c] >= float(threshold))
-                        & (margin[c] >= 0.05)
-                        & (max_prob[c] >= 0.45)
-                    )
-                    chosen[accept] = c
-                    routed_correct[accept] = pred_correct[c, accept]
-                    trusted |= accept
+            def per_budget_route_item(thresholds_by_budget, trusted, chosen, routed_correct):
+                n = routed_correct.numel()
                 core_layers = torch.where(
                     trusted,
                     torch.full((n,), float(cfg.jump_layers)) + chosen.float() * float(cfg.core_layers),
                     torch.full((n,), full_core_layers),
                 )
                 accepted_count_i = int(trusted.sum().item())
-                accepted_correct_i = int(routed_correct[trusted].sum().item()) if accepted_count_i > 0 else 0
+                accepted_correct_i = (
+                    float(routed_correct[trusted].float().sum().item()) if accepted_count_i > 0 else 0.0
+                )
+                if accepted_count_i > 0:
+                    accepted_budget = chosen[trusted].clamp(0, cfg.max_correct).long()
+                    accepted_by_budget = torch.bincount(
+                        accepted_budget,
+                        minlength=cfg.max_correct + 1,
+                    ).tolist()
+                    accepted_correct_by_budget = torch.bincount(
+                        accepted_budget,
+                        weights=routed_correct[trusted].float(),
+                        minlength=cfg.max_correct + 1,
+                    ).tolist()
+                else:
+                    accepted_by_budget = [0 for _ in range(cfg.max_correct + 1)]
+                    accepted_correct_by_budget = [0.0 for _ in range(cfg.max_correct + 1)]
                 item = {
                     "thresholds": [float(t) for t in thresholds_by_budget],
                     "threshold_key": ",".join(threshold_key(t) for t in thresholds_by_budget),
@@ -4634,8 +4795,67 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     "false_accept_rate": (
                         1.0 - accepted_correct_i / accepted_count_i if accepted_count_i > 0 else None
                     ),
+                    "accepted_by_budget": accepted_by_budget,
+                    "accepted_correct_by_budget": accepted_correct_by_budget,
+                    "accepted_precision_by_budget": [
+                        (
+                            accepted_correct_by_budget[budget] / accepted_by_budget[budget]
+                            if accepted_by_budget[budget] > 0
+                            else None
+                        )
+                        for budget in range(cfg.max_correct + 1)
+                    ],
+                    "accepted_share_by_budget": [
+                        (
+                            accepted_by_budget[budget] / accepted_count_i
+                            if accepted_count_i > 0
+                            else 0.0
+                        )
+                        for budget in range(cfg.max_correct + 1)
+                    ],
                 }
                 return item
+
+            def evaluate_per_budget_thresholds(records, thresholds_by_budget):
+                full_correct = records["full_correct"].bool()
+                pred_correct = records["pred_correct"].bool()
+                verify = records["verify"]
+                margin = records["margin"]
+                max_prob = records["max_prob"]
+                n = full_correct.numel()
+                trusted = torch.zeros(n, dtype=torch.bool)
+                chosen = torch.full((n,), cfg.loop_steps, dtype=torch.long)
+                routed_correct = full_correct.clone()
+                for c, threshold in enumerate(thresholds_by_budget):
+                    accept = (
+                        (~trusted)
+                        & (verify[c] >= float(threshold))
+                        & (margin[c] >= 0.05)
+                        & (max_prob[c] >= 0.45)
+                    )
+                    chosen[accept] = c
+                    routed_correct[accept] = pred_correct[c, accept]
+                    trusted |= accept
+                return per_budget_route_item(thresholds_by_budget, trusted, chosen, routed_correct)
+
+            def evaluate_per_budget_utility_thresholds(records, thresholds_by_budget, guarded: bool = False):
+                full_correct = records["full_correct"].bool()
+                pred_correct = records["pred_correct"].bool()
+                utility = records["utility"]
+                margin = records["margin"]
+                max_prob = records["max_prob"]
+                n = full_correct.numel()
+                trusted = torch.zeros(n, dtype=torch.bool)
+                chosen = torch.full((n,), cfg.loop_steps, dtype=torch.long)
+                routed_correct = full_correct.clone()
+                for c, threshold in enumerate(thresholds_by_budget):
+                    accept = (~trusted) & (utility[c] >= float(threshold))
+                    if guarded:
+                        accept = accept & (margin[c] >= 0.05) & (max_prob[c] >= 0.45)
+                    chosen[accept] = c
+                    routed_correct[accept] = pred_correct[c, accept]
+                    trusted |= accept
+                return per_budget_route_item(thresholds_by_budget, trusted, chosen, routed_correct)
 
             def choose_per_budget_thresholds(records, threshold_values, monotone: bool = False):
                 full_teacher_acc = records["full_correct"].float().mean().item()
@@ -4662,6 +4882,98 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     return thresholds_by_budget, item, "within_val_drop", floor, full_teacher_acc
                 _, thresholds_by_budget, item = best_overall
                 return thresholds_by_budget, item, "best_val_accuracy", floor, full_teacher_acc
+
+            def choose_per_budget_utility_thresholds(
+                records,
+                threshold_values,
+                monotone: bool = False,
+                guarded: bool = False,
+                max_exhaustive_combinations: int = 20000,
+            ):
+                threshold_values = sorted(set(float(t) for t in threshold_values))
+                full_teacher_acc = records["full_correct"].float().mean().item()
+                floor = full_teacher_acc - cfg.router_val_max_drop
+                best_acceptable = None
+                best_overall = None
+                num_budgets = cfg.max_correct + 1
+
+                def monotone_ok(thresholds_by_budget):
+                    return not monotone or not any(
+                        thresholds_by_budget[i] < thresholds_by_budget[i + 1]
+                        for i in range(len(thresholds_by_budget) - 1)
+                    )
+
+                def consider(thresholds_by_budget):
+                    nonlocal best_acceptable, best_overall
+                    thresholds_by_budget = tuple(float(t) for t in thresholds_by_budget)
+                    if not monotone_ok(thresholds_by_budget):
+                        return
+                    item = evaluate_per_budget_utility_thresholds(
+                        records,
+                        thresholds_by_budget,
+                        guarded=guarded,
+                    )
+                    acceptable_key = (item["avg_core_layers"], -item["acc"])
+                    overall_key = (item["acc"], -item["avg_core_layers"])
+                    if item["acc"] >= floor and (
+                        best_acceptable is None or acceptable_key < best_acceptable[0]
+                    ):
+                        best_acceptable = (acceptable_key, thresholds_by_budget, item)
+                    if best_overall is None or overall_key > best_overall[0]:
+                        best_overall = (overall_key, thresholds_by_budget, item)
+
+                def current_best():
+                    if best_acceptable is not None:
+                        return best_acceptable[1], best_acceptable[2], "within_val_drop"
+                    return best_overall[1], best_overall[2], "best_val_accuracy"
+
+                combo_count = len(threshold_values) ** num_budgets
+                search_method = "exhaustive"
+                if combo_count <= max_exhaustive_combinations:
+                    for thresholds_by_budget in itertools.product(threshold_values, repeat=num_budgets):
+                        consider(thresholds_by_budget)
+                else:
+                    max_coarse_values = 9
+                    stride = max(1, math.ceil(len(threshold_values) / max_coarse_values))
+                    coarse_values = sorted(set(threshold_values[::stride] + [threshold_values[-1]]))
+                    while len(coarse_values) ** num_budgets > max_exhaustive_combinations and len(coarse_values) > 2:
+                        stride += 1
+                        coarse_values = sorted(set(threshold_values[::stride] + [threshold_values[-1]]))
+                    for thresholds_by_budget in itertools.product(coarse_values, repeat=num_budgets):
+                        consider(thresholds_by_budget)
+                    start_thresholds, _, _ = current_best()
+                    current = list(start_thresholds)
+                    for _ in range(4):
+                        improved = False
+                        for budget in range(num_budgets):
+                            local_best = None
+                            for threshold in threshold_values:
+                                trial = list(current)
+                                trial[budget] = threshold
+                                trial = tuple(trial)
+                                if not monotone_ok(trial):
+                                    continue
+                                item = evaluate_per_budget_utility_thresholds(
+                                    records,
+                                    trial,
+                                    guarded=guarded,
+                                )
+                                if item["acc"] >= floor:
+                                    key = (0, item["avg_core_layers"], -item["acc"])
+                                else:
+                                    key = (1, -item["acc"], item["avg_core_layers"])
+                                if local_best is None or key < local_best[0]:
+                                    local_best = (key, trial)
+                            if local_best is not None and tuple(current) != local_best[1]:
+                                current = list(local_best[1])
+                                improved = True
+                                consider(current)
+                        if not improved:
+                            break
+                    search_method = f"coarse_coordinate_{len(coarse_values)}"
+                thresholds_by_budget, item, reason = current_best()
+                item["threshold_search"] = search_method
+                return thresholds_by_budget, item, reason, floor, full_teacher_acc
 
             def choose_heldout_threshold(
                 val_grid,
@@ -4908,6 +5220,69 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     torch.full_like(chosen_utility.float(), float(cfg.loop_steps)),
                                 ).mean().item()
                                 metrics[f"{prefix}_avg_core_layers"] += utility_core_layers.mean().item()
+                            for policy_name, confirm_floor in zip(
+                                utility_then_agree_policy_names,
+                                utility_then_agree_floors,
+                            ):
+                                pred_confirmed, trusted_confirmed, chosen_confirmed, confirmed_core_layers = (
+                                    route_utility_then_agree_predictions(
+                                        pred_stack,
+                                        verify_stack,
+                                        utility_stack,
+                                        margin_stack,
+                                        max_prob_stack,
+                                        agree_stack,
+                                        full_pred,
+                                        target,
+                                        threshold,
+                                        confirm_floor,
+                                    )
+                                )
+                                prefix = f"router_{suffix}_{policy_name}"
+                                metrics[f"{prefix}_acc"] += (pred_confirmed == target).float().mean().item()
+                                metrics[f"{prefix}_full_loop_rate"] += (
+                                    ~trusted_confirmed
+                                ).float().mean().item()
+                                metrics[f"{prefix}_avg_tail_loops"] += torch.where(
+                                    trusted_confirmed,
+                                    chosen_confirmed.float(),
+                                    torch.full_like(chosen_confirmed.float(), float(cfg.loop_steps)),
+                                ).mean().item()
+                                metrics[f"{prefix}_avg_core_layers"] += confirmed_core_layers.mean().item()
+                            for policy_name, utility_floor in zip(
+                                agree_then_utility_policy_names,
+                                agree_then_utility_floors,
+                            ):
+                                (
+                                    pred_agree_utility,
+                                    trusted_agree_utility,
+                                    chosen_agree_utility,
+                                    agree_utility_core_layers,
+                                ) = route_agree_then_utility_predictions(
+                                    pred_stack,
+                                    verify_stack,
+                                    utility_stack,
+                                    margin_stack,
+                                    max_prob_stack,
+                                    agree_stack,
+                                    full_pred,
+                                    target,
+                                    threshold,
+                                    utility_floor,
+                                )
+                                prefix = f"router_{suffix}_{policy_name}"
+                                metrics[f"{prefix}_acc"] += (
+                                    pred_agree_utility == target
+                                ).float().mean().item()
+                                metrics[f"{prefix}_full_loop_rate"] += (
+                                    ~trusted_agree_utility
+                                ).float().mean().item()
+                                metrics[f"{prefix}_avg_tail_loops"] += torch.where(
+                                    trusted_agree_utility,
+                                    chosen_agree_utility.float(),
+                                    torch.full_like(chosen_agree_utility.float(), float(cfg.loop_steps)),
+                                ).mean().item()
+                                metrics[f"{prefix}_avg_core_layers"] += agree_utility_core_layers.mean().item()
                         if cfg.use_consistency_head and cfg.use_utility_router:
                             for policy_name, consistency_threshold in zip(
                                 consistency_policy_names,
@@ -5152,8 +5527,72 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     "val_policies": val_grid["policies"],
                     "final_policies": final_grid["policies"],
                 }
+                val_records = None
+                final_records = None
+
+                def ensure_router_records():
+                    nonlocal val_records, final_records
+                    if val_records is None:
+                        val_records = collect_router_records(cfg.router_val_batches)
+                    if final_records is None:
+                        final_records = collect_router_records(cfg.eval_batches)
+                    return val_records, final_records
+
+                if cfg.use_utility_router:
+                    val_records, final_records = ensure_router_records()
+                    for audit_name, guarded in (
+                        ("utility_per_budget", False),
+                        ("utility_guarded_per_budget", True),
+                    ):
+                        (
+                            utility_thresholds,
+                            utility_val,
+                            utility_reason,
+                            utility_floor,
+                            utility_val_teacher,
+                        ) = choose_per_budget_utility_thresholds(
+                            val_records,
+                            candidates,
+                            guarded=guarded,
+                        )
+                        utility_final = evaluate_per_budget_utility_thresholds(
+                            final_records,
+                            utility_thresholds,
+                            guarded=guarded,
+                        )
+                        heldout_audit[audit_name] = {
+                            "selection_reason": utility_reason,
+                            "val_accuracy_floor": utility_floor,
+                            "val_full_teacher_acc": utility_val_teacher,
+                            "final_full_teacher_acc": final_records["full_correct"].float().mean().item(),
+                            "val": utility_val,
+                            "final": utility_final,
+                        }
+                    (
+                        utility_monotone_thresholds,
+                        utility_monotone_val,
+                        utility_monotone_reason,
+                        utility_monotone_floor,
+                        utility_monotone_val_teacher,
+                    ) = choose_per_budget_utility_thresholds(
+                        val_records,
+                        candidates,
+                        monotone=True,
+                    )
+                    utility_monotone_final = evaluate_per_budget_utility_thresholds(
+                        final_records,
+                        utility_monotone_thresholds,
+                    )
+                    heldout_audit["utility_per_budget_monotone"] = {
+                        "selection_reason": utility_monotone_reason,
+                        "val_accuracy_floor": utility_monotone_floor,
+                        "val_full_teacher_acc": utility_monotone_val_teacher,
+                        "final_full_teacher_acc": final_records["full_correct"].float().mean().item(),
+                        "val": utility_monotone_val,
+                        "final": utility_monotone_final,
+                    }
                 if cfg.router_per_budget_audit:
-                    val_records = collect_router_records(cfg.router_val_batches)
+                    val_records, final_records = ensure_router_records()
                     (
                         per_budget_thresholds,
                         per_budget_val,
@@ -5161,7 +5600,6 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         per_budget_floor,
                         per_budget_val_teacher,
                     ) = choose_per_budget_thresholds(val_records, candidates)
-                    final_records = collect_router_records(cfg.eval_batches)
                     per_budget_final = evaluate_per_budget_thresholds(
                         final_records,
                         per_budget_thresholds,
