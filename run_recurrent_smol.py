@@ -295,6 +295,7 @@ def config_for_mode(mode: str) -> Config:
             cfg.final_loop_loss_weight = 8.0
             cfg.load_checkpoints = True
             cfg.checkpoint_tag = "dry_strathop_polish2_seed{seed}"
+            cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
             cfg.router_val_batches = 1
             cfg.timing_batch_sizes = "1,2"
         elif mode == "dry_sweep":
@@ -1597,6 +1598,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
 
     jumprec = None
     jump_summary = None
+    jumprec_prompt_audit_summary = None
     direct_summary = None
     should_use_jumprec = cfg.jump_steps > 0 or (
         loaded_checkpoint is not None
@@ -1795,7 +1797,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     )
             save_checkpoint(model, jumprec)
 
-        def eval_jumprec():
+        def eval_jumprec(audit_variant: str = "normal", include_heldout: bool = True):
             jumprec.eval()
             thresholds = [(0.80, "080"), (0.90, "090"), (0.95, "095")]
             router_policies = [("no_agree", False), ("agree", True)]
@@ -1952,6 +1954,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(
                             cfg.batch_size,
                             hard_hop_sampling=False,
+                            audit_variant=audit_variant,
                         )
                         state0, layer_mask, position_ids, position_embeddings, _, teacher_logits = teacher_collect(
                             input_ids,
@@ -2061,6 +2064,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     input_ids, attention_mask, lengths, target, _, hops, task_ids = batch_encoded(
                         cfg.batch_size,
                         hard_hop_sampling=False,
+                        audit_variant=audit_variant,
                     )
                     state0, layer_mask, position_ids, position_embeddings, _, teacher_logits = teacher_collect(
                         input_ids,
@@ -2158,6 +2162,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                     )
             for k in list(metrics):
                 metrics[k] /= cfg.eval_batches
+            metrics["audit_variant"] = audit_variant
             metrics["full_core_layers"] = full_core_layers
             for _, suffix in thresholds:
                 metrics[f"strict_{suffix}_fallback_core_savings_vs_full_pct"] = (
@@ -2187,7 +2192,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     for key, bucket in calibration["by_budget"].items()
                 },
             }
-            if cfg.router_val_batches > 0:
+            if include_heldout and cfg.router_val_batches > 0:
                 candidates = parse_float_list(cfg.router_threshold_candidates)
                 if not candidates:
                     candidates = [threshold for threshold, _ in thresholds]
@@ -2221,6 +2226,16 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
 
         jump_summary = eval_jumprec()
         print(f"[jumprec eval] {json.dumps(jump_summary, indent=2)}")
+        if audit_prompt_variants:
+            py_random_state = random.getstate()
+            try:
+                jumprec_prompt_audit_summary = {
+                    variant: eval_jumprec(variant, include_heldout=False)
+                    for variant in audit_prompt_variants
+                }
+            finally:
+                random.setstate(py_random_state)
+            print(f"[jumprec prompt audit] {json.dumps(jumprec_prompt_audit_summary, indent=2)}")
 
     if cfg.direct_steps > 0:
         for p in model.parameters():
@@ -2504,6 +2519,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         "eval": eval_summary,
         "prompt_audit": prompt_audit_summary,
         "jumprec_eval": jump_summary,
+        "jumprec_prompt_audit": jumprec_prompt_audit_summary,
         "direct_eval": direct_summary,
         "timing": timing_summary,
     }
