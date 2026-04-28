@@ -1,7 +1,8 @@
 # JumpRec Next Steps Handoff
 
-This file is meant for a fresh Codex instance. Read this before loading long
-logs or compaction notes.
+This file is meant for a fresh Codex instance, but it is no longer the shortest
+entry point. Read `README.md` and `JUMPREC_CURRENT_STATE.md` first, then use
+this file for the active queue and older handoff context.
 
 ## Current Thesis
 
@@ -20,11 +21,9 @@ but the verifier/controller is what turns it into "small unless hard."
 
 Current active focus:
 
-> The concept has enough legs in the synthetic SmolLM hard case. Stop spending
-> the main research loop on proving that the jump can learn. The next important
-> work is to design the best routing/controller possible: quality-preserving,
-> calibrated, cheap, and robust enough to replace agreement routing where
-> possible.
+> Selective agreement is the active adaptive contract. Use it for the first
+> small-batch general looped-LLM application test, while separately working on
+> grouped/cached adjacent checks for throughput.
 
 ## Repo State To Respect
 
@@ -32,26 +31,40 @@ Current active focus:
 - Main runner: `run_recurrent_smol.py`
 - Results ledger: `JUMPREC_RESULTS.md`
 - Audit checklist from another Codex instance: `JUMPREC_ARTIFACT_AUDIT.md`
+- Current-state handoff: `JUMPREC_CURRENT_STATE.md`
 - Remote: `https://github.com/asystemoffields/jumprec`
-- Recent pushed commits before this update:
-  - `7817ae4` Sort relabeled audit mappings
-  - `abc4958` Record corrected prompt audit
-  - `72bcc88` Add held-out verifier audit
-  - `d518104` Record held-out verifier audit
-  - `c6ad7fe` Add JumpRec prompt audit
-  - `098399a` Record JumpRec prompt audit
-  - `762c7cb` Add JumpRec hardcase ablation modes
-  - `caa078b` Record seed-101 JumpRec ablations
-  - `7f5f17a` Add JumpRec next steps handoff
+- Recent notable pushed commits before this housekeeping pass:
+  - `3cb4126` Add selective agreement audit
+  - `18c53eb` Add one-candidate probe audit
+  - `43b8c50` Add agreement-distilled halt audits
+  - `576447a` Add CATS consistency router audit
 
 Check `git log --oneline -5` for the final commit hash of this update.
 
 Current working tree may still contain unrelated local/scratch files:
 
-- `JUMPREC_ARTIFACT_AUDIT.md` untracked but important.
 - old untracked smoke files: `SPEC.md`, `run_smoke_v0*.py`, `run_smoke_v1.py`.
 
 Do not revert or casually commit those unless the user explicitly asks.
+
+## Current Selective-Agreement Result
+
+High-validation means over seeds 101, 202, and repaired polish2 seed 42:
+
+| Policy | Accuracy | Counted Core | Adjacent Check Rate |
+|---|---:|---:|---:|
+| Utility speed selector | 99.628% | 2.87 / 18 | 0% |
+| True agreement | 99.711% | 2.71 / 18 | Broad reference check |
+| Selective agreement | 99.713% | 2.70 / 18 | 29.9% |
+
+Batch-1 timing averages 12.24 ms for selective agreement, compared with
+11.98 ms for utility 0.90, 16.59 ms for true agreement, and 22.64 ms for the
+full loop. Batch-64 remains a throughput caveat: selective agreement is faster
+than true agreement but slower than full-loop/all-budgets parallel execution.
+
+This result supersedes the older "find a controller that can replace
+agreement" framing. The current question is how to apply and package selective
+agreement, not whether the agreement frontier can be reached at all.
 
 ## Main Results So Far
 

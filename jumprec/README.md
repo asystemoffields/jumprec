@@ -16,7 +16,7 @@ Planned package surfaces:
 
 Promotion checklist:
 
-- Seed-confirmed result on the current mixed/core3 benchmark.
+- Seed-confirmed result on the current 8-node / 4-hop SmolLM hard case.
 - Timing sweep documents where adaptive routing helps and where batching hurts.
 - Selective agreement reproduces the agreement frontier in the target small-batch regime.
 - Checkpoint save/load path is stable.

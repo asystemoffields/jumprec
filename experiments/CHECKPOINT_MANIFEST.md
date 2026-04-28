@@ -34,6 +34,26 @@ Training modes load the teacher family and save a reusable joint-halt checkpoint
 | `*_joint_halt_slo_stability` | matching teacher | `*_joint_halt_slo_stability_seed{seed}` |
 | `*_joint_halt_quality_cats` | `*_joint_halt_quality_seed{seed}` | `*_joint_halt_quality_cats_seed{seed}` |
 
+## Current Promoted Checkpoint Family
+
+Selective agreement currently uses the quality-plus-stability checkpoints:
+
+| Seed | Mode prefix | Checkpoint tag |
+|---:|---|---|
+| 101 | `core3_8n4h_strathop` | `core3_8n4h_strathop_joint_halt_quality_stability_seed101` |
+| 202 | `core3_8n4h_strathop` | `core3_8n4h_strathop_joint_halt_quality_stability_seed202` |
+| 42 | `core3_8n4h_strathop_polish2` | `core3_8n4h_strathop_polish2_joint_halt_quality_stability_seed42` |
+
+The active evaluation modes are:
+
+```text
+core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval
+core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse_highval
+```
+
+These modes run the high-validation held-out audit, the selective-agreement
+audit, the probe upper-bound audit, and the batch-size timing sweep.
+
 Reuse modes load the corresponding joint-halt checkpoint, skip additional
 joint-halt training, and run evaluation/audit only:
 

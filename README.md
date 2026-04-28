@@ -9,6 +9,21 @@ recurrent SmolLM2-135M retrofit. Results, run history, caveats, and tables live
 in `JUMPREC_RESULTS.md`; this README is meant to explain the architecture and
 how the repo is currently set up.
 
+## Start Here
+
+- `JUMPREC_CURRENT_STATE.md`: the short current-state handoff. Read this first
+  if you are a new instance.
+- `JUMPREC_RESULTS.md`: full experiment ledger, tables, and interpretation.
+- `JUMPREC_NEXT_STEPS.md`: current queue plus older handoff notes.
+- `experiments/CHECKPOINT_MANIFEST.md`: active checkpoint dependencies.
+- `JUMPREC_ARTIFACT_AUDIT.md`: claim-safety and audit gates.
+
+Current headline: selective agreement is the active adaptive contract. It
+matches the true-agreement quality frontier on the synthetic hard case while
+checking adjacent budgets on only the ambiguous slice. It is promoted for
+small-batch/interactive application testing, not yet for high-throughput
+serving.
+
 ## Core Idea
 
 A recurrent teacher runs part of a transformer multiple times. That gives the
@@ -195,16 +210,15 @@ python -m unittest discover -s tests
 ```
 
 Dry modes use a fake model and short training schedules to catch wiring errors
-before launching Modal jobs:
+before launching Modal jobs. The current promoted-path guard is:
 
 ```powershell
-python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality --local
-python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality_agdistill --local
-python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_slo --local
-python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_stability --local
-python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality_cats --local
-python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_quality_cats_reuse --local
+python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_stability_reuse --local
 ```
+
+Additional dry modes exist for quality, SLO, CATS, and agreement-distillation
+branches, but those are historical or diagnostic unless a new experiment
+explicitly revives them.
 
 ## Scaling Constraint
 
@@ -238,6 +252,7 @@ subsets can erase the counted-compute saving.
 - `run_jumprec_v0.py`: older pure synthetic JumpRec runner.
 - `run_jumprec_smol.py`: earlier SmolLM2 crash-test runner.
 - `JUMPREC_SPEC.md`: architecture sketch and experimental framing.
+- `JUMPREC_CURRENT_STATE.md`: short current-state handoff and active claims.
 - `JUMPREC_RESULTS.md`: run history, tables, and interpretation.
 - `JUMPREC_NEXT_STEPS.md`: current research queue.
 - `JUMPREC_ARTIFACT_AUDIT.md`: artifact and claim-safety checklist.

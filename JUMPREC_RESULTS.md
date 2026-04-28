@@ -1,5 +1,18 @@
 # JumpRec results
 
+Current state first:
+
+- Read `README.md` for architecture and repo orientation.
+- Read `JUMPREC_CURRENT_STATE.md` for the current promoted result and claim
+  boundary.
+- The latest promoted contract is selective agreement on the 8-node / 4-hop
+  SmolLM2 hard case: direct-accept high-utility candidates, run adjacent-budget
+  agreement only on ambiguous candidates, and fall back to the full teacher
+  otherwise.
+
+This file is chronological and intentionally preserves older failed or
+superseded branches. Later sections override earlier progress-report language.
+
 ## 2026-04-25 - v0 smoke probe
 
 Command:
