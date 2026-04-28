@@ -82,6 +82,50 @@ class JointHaltConfigTests(unittest.TestCase):
         self.assertFalse(plain_quality_cfg.router_probe_audit)
         self.assertFalse(plain_quality_cfg.router_selective_agree_audit)
 
+    def test_natgraph_bridge_modes_resolve(self):
+        teacher_cfg = smol.config_for_mode("core3_8n4h_natgraph_teacher")
+        self.assertEqual(teacher_cfg.prompt_style, "natural_graph")
+        self.assertEqual(teacher_cfg.checkpoint_tag, "core3_8n4h_natgraph_seed{seed}")
+        self.assertTrue(teacher_cfg.save_checkpoints)
+        self.assertGreaterEqual(teacher_cfg.max_length, 224)
+
+        train_cfg = smol.config_for_mode("core3_8n4h_natgraph_joint_halt_quality_stability")
+        self.assertEqual(train_cfg.prompt_style, "natural_graph")
+        self.assertTrue(train_cfg.use_utility_router)
+        self.assertTrue(train_cfg.use_stability_head)
+        self.assertEqual(train_cfg.load_checkpoint_tag, "core3_8n4h_natgraph_seed{seed}")
+        self.assertEqual(
+            train_cfg.checkpoint_tag,
+            "core3_8n4h_natgraph_joint_halt_quality_stability_seed{seed}",
+        )
+        self.assertEqual(train_cfg.jump_steps, 4500)
+        self.assertEqual(train_cfg.joint_halt_steps, 2000)
+        self.assertFalse(train_cfg.load_jumprec_state)
+
+        reuse_cfg = smol.config_for_mode(
+            "core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval"
+        )
+        self.assertEqual(reuse_cfg.prompt_style, "natural_graph")
+        self.assertEqual(reuse_cfg.joint_halt_steps, 0)
+        self.assertFalse(reuse_cfg.save_checkpoints)
+        self.assertTrue(reuse_cfg.load_jumprec_state)
+        self.assertTrue(reuse_cfg.router_selective_agree_audit)
+        self.assertEqual(reuse_cfg.router_val_batches, 256)
+
+    def test_natgraph_prompt_formatter_keeps_answer_blank(self):
+        labels = smol.route_label_names("natural_graph", 4)
+        prompt = smol.format_route_prompt(
+            "natural_graph",
+            "alternate",
+            [(0, 1), (1, 2), (2, 3), (3, 0)],
+            labels,
+            0,
+            3,
+        )
+        self.assertIn("route card", prompt)
+        self.assertIn("alternating each move", prompt)
+        self.assertEqual(prompt.split("Answer:", 1)[1].strip(), "")
+
     def test_slo_modes_sample_route_operating_point(self):
         cfg = smol.config_for_mode("core3_8n4h_strathop_joint_halt_slo")
         self.assertGreater(cfg.joint_halt_false_accept_weight_max, cfg.utility_false_accept_weight)

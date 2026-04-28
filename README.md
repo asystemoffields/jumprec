@@ -183,6 +183,11 @@ matters, controls are easy to define, and shortcut/fallback behavior can be
 measured precisely. It's not really evidence for open-ended chat or broad
 reasoning performance yet.
 
+The next bridge family is `core3_8n4h_natgraph_*`. It keeps the graph traversal
+target controlled but changes the interface to natural-language route-card
+prompts, so selective agreement can be tested outside the compact symbolic
+prompt format before any broader LLM claim.
+
 ## Artifact Discipline
 
 `JUMPREC_ARTIFACT_AUDIT.md` is a standing design constraint. Before promoting a

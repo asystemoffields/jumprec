@@ -28,6 +28,24 @@ The reuse/highval modes load existing checkpoints, skip training, and run the
 large held-out audit plus timing sweep. The selective-agreement result is in
 `heldout_threshold_audit.selective_agreement`.
 
+## Application Bridge
+
+The next live path is the natural-language graph traversal bridge. It uses
+route-card prose instead of compact `Task/Map/Start/Hops` prompts, while keeping
+the recurrence target controlled enough for teacher gates and artifact audits.
+
+Run order:
+
+```powershell
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_joint_halt_quality_stability --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval --seed 101
+```
+
+Only expand to seeds 42 and 202 if the seed-101 teacher is strong by hop and
+the high-validation selective-agreement audit is positive. Treat this as a
+bridge result, not a general LLM acceleration claim.
+
 ## Reproduce Current Result
 
 ```powershell
@@ -60,6 +78,9 @@ Logs are ignored by git. Temporary job-state JSONs should be deleted after use.
 python -m py_compile .\run_recurrent_smol.py
 python -m unittest discover -s tests
 python .\run_recurrent_smol.py --mode dry_strathop_polish2_joint_halt_stability_reuse --local
+python .\run_recurrent_smol.py --mode dry_natgraph_teacher --local
+python .\run_recurrent_smol.py --mode dry_natgraph_joint_halt_quality_stability --local
+python .\run_recurrent_smol.py --mode dry_natgraph_joint_halt_quality_stability_reuse --local
 ```
 
 The dry mode is a wiring guard only. It does not validate quality.

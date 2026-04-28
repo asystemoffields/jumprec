@@ -40,6 +40,70 @@ image = (
     .env({"HF_HOME": "/cache/huggingface", "TRANSFORMERS_CACHE": "/cache/huggingface"})
 )
 
+NATGRAPH_NODE_NAMES = [
+    "Aria",
+    "Bryn",
+    "Cato",
+    "Dune",
+    "Ezra",
+    "Faye",
+    "Galen",
+    "Hale",
+    "Iris",
+    "Juno",
+    "Kira",
+    "Luca",
+    "Mira",
+    "Nico",
+    "Orin",
+    "Pax",
+]
+
+
+def route_label_names(prompt_style: str, n_nodes: int) -> List[str]:
+    if prompt_style == "compact":
+        return [chr(ord("A") + i) for i in range(n_nodes)]
+    if prompt_style == "natural_graph":
+        if n_nodes <= len(NATGRAPH_NODE_NAMES):
+            return NATGRAPH_NODE_NAMES[:n_nodes]
+        return NATGRAPH_NODE_NAMES + [f"Place{i}" for i in range(len(NATGRAPH_NODE_NAMES), n_nodes)]
+    raise ValueError(f"unknown prompt_style: {prompt_style}")
+
+
+def format_route_prompt(
+    prompt_style: str,
+    task: str,
+    mapping_pairs: List[Tuple[int, int]],
+    label_names: List[str],
+    start_label: int,
+    hops: int,
+) -> str:
+    mapping = " ".join(f"{label_names[src]}->{label_names[dst]}" for src, dst in mapping_pairs)
+    if prompt_style == "compact":
+        return (
+            f"Task: {task}. Map: {mapping}. Start: {label_names[start_label]}. "
+            f"Hops: {hops}. Answer:"
+        )
+    if prompt_style == "natural_graph":
+        route_text = "; ".join(
+            f"{label_names[src]} leads to {label_names[dst]}" for src, dst in mapping_pairs
+        )
+        instructions = {
+            "forward": "follow each route arrow",
+            "inverse": "move against each route arrow",
+            "alternate": "first follow an arrow, then move against an arrow, alternating each move",
+            "square": "treat one move as two route arrows in a row",
+        }
+        rule = instructions.get(task, f"use the {task} rule")
+        return (
+            "You are checking a route card. "
+            f"Routes: {route_text}. "
+            f"Start at {label_names[start_label]}. "
+            f"Rule: {rule}. Moves: {hops}. "
+            "Which place is reached? Answer:"
+        )
+    raise ValueError(f"unknown prompt_style: {prompt_style}")
+
 
 @dataclass
 class Config:
@@ -87,6 +151,7 @@ class Config:
     reinject_init: float = 0.20
     use_reinject: bool = True
     mixed_tasks: bool = False
+    prompt_style: str = "compact"
     curriculum_hops: bool = False
     hard_hop_fraction: float = 0.0
     hop_sample_weights: str = ""
@@ -169,6 +234,9 @@ def config_for_mode(mode: str) -> Config:
         "dry",
         "dry_sweep",
         "dry_sweep_reuse",
+        "dry_natgraph_teacher",
+        "dry_natgraph_joint_halt_quality_stability",
+        "dry_natgraph_joint_halt_quality_stability_reuse",
         "dry_hardhop",
         "dry_strathop",
         "dry_strathop_gate",
@@ -227,7 +295,65 @@ def config_for_mode(mode: str) -> Config:
         cfg.jump_layers = 1
         cfg.direct_steps = 4
         cfg.direct_layers = 2
-        if mode == "dry_hardhop":
+        if mode == "dry_natgraph_teacher":
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.max_length = 224
+            cfg.prompt_style = "natural_graph"
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+            cfg.final_loop_loss_weight = 4.0
+            cfg.jump_steps = 0
+            cfg.direct_steps = 0
+            cfg.save_checkpoints = True
+            cfg.checkpoint_tag = "dry_natgraph_seed{seed}"
+            cfg.timing_batch_sizes = "1,2"
+        elif mode in (
+            "dry_natgraph_joint_halt_quality_stability",
+            "dry_natgraph_joint_halt_quality_stability_reuse",
+        ):
+            is_reuse = mode.endswith("_reuse")
+            cfg.n_nodes = 8
+            cfg.max_hops = 4
+            cfg.max_correct = 3
+            cfg.max_length = 224
+            cfg.prompt_style = "natural_graph"
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+            cfg.final_loop_loss_weight = 4.0
+            cfg.final_steps = 0
+            cfg.recurrent_steps = 0
+            cfg.jump_steps = 0 if is_reuse else 4
+            cfg.joint_halt_steps = 0 if is_reuse else 4
+            cfg.direct_steps = 0
+            cfg.strict_need_agreement = False
+            cfg.load_checkpoints = True
+            cfg.load_checkpoint_tag = (
+                "dry_natgraph_joint_halt_quality_stability_seed{seed}"
+                if is_reuse
+                else "dry_natgraph_seed{seed}"
+            )
+            cfg.save_checkpoints = not is_reuse
+            cfg.checkpoint_tag = "dry_natgraph_joint_halt_quality_stability_seed{seed}"
+            cfg.load_jumprec_state = is_reuse
+            cfg.use_stability_head = True
+            cfg.use_utility_router = True
+            cfg.utility_use_stability_feature = True
+            cfg.utility_false_accept_weight = 12.0
+            cfg.utility_cost_weight = 0.08
+            cfg.utility_correctness_bce_weight = 0.10
+            cfg.joint_halt_candidate_ce_weight = 1.00
+            cfg.joint_halt_candidate_distill_weight = 0.15
+            cfg.joint_halt_verifier_bce_weight = 0.08
+            cfg.joint_halt_stability_weight = 0.05
+            cfg.joint_halt_agreement_bce_weight = 0.08
+            cfg.router_val_batches = 1
+            cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
+            cfg.router_probe_audit = is_reuse
+            cfg.router_selective_agree_audit = is_reuse
+            cfg.timing_batch_sizes = "1,2"
+        elif mode == "dry_hardhop":
             cfg.n_nodes = 8
             cfg.max_hops = 4
             cfg.max_correct = 3
@@ -1092,6 +1218,30 @@ def config_for_mode(mode: str) -> Config:
         cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
         cfg.eval_batches = 96
         cfg.log_every = 500
+    elif mode == "core3_8n4h_natgraph_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 6500
+        cfg.recurrent_steps = 10000
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_seed{seed}"
+        cfg.teacher_val_every = 500
+        cfg.teacher_val_batches = 16
+        cfg.teacher_gate_min_full = 0.995
+        cfg.teacher_gate_min_worst_hop = 0.98
+        cfg.eval_batches = 96
+        cfg.log_every = 500
     elif mode == "core3_8n4h_strathop_gate_teacher":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -1183,6 +1333,27 @@ def config_for_mode(mode: str) -> Config:
         cfg.direct_steps = 0
         cfg.load_checkpoints = True
         cfg.checkpoint_tag = "core3_8n4h_strathop_seed{seed}"
+        cfg.eval_batches = 256
+        cfg.timing_batches = 16
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_natgraph_eval_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_seed{seed}"
         cfg.eval_batches = 256
         cfg.timing_batches = 16
         cfg.log_every = 500
@@ -1736,6 +1907,68 @@ def config_for_mode(mode: str) -> Config:
             cfg.timing_batch_sizes = "1,64"
         cfg.log_every = 500
     elif mode in (
+        "core3_8n4h_natgraph_joint_halt_quality_stability",
+        "core3_8n4h_natgraph_joint_halt_quality_stability_reuse",
+        "core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval",
+    ):
+        is_natgraph_reuse = "_reuse" in mode
+        is_highval_reuse = mode.endswith("_reuse_highval")
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.load_checkpoint_tag = (
+            "core3_8n4h_natgraph_joint_halt_quality_stability_seed{seed}"
+            if is_natgraph_reuse
+            else "core3_8n4h_natgraph_seed{seed}"
+        )
+        cfg.jump_steps = 0 if is_natgraph_reuse else 4500
+        cfg.joint_halt_steps = 0 if is_natgraph_reuse else 2000
+        cfg.direct_steps = 0
+        cfg.direct_layers = 3
+        cfg.strict_need_agreement = False
+        cfg.load_checkpoints = True
+        cfg.save_checkpoints = not is_natgraph_reuse
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_joint_halt_quality_stability_seed{seed}"
+        cfg.load_jumprec_state = is_natgraph_reuse
+        cfg.use_stability_head = True
+        cfg.use_utility_router = True
+        cfg.utility_use_stability_feature = True
+        cfg.utility_false_accept_weight = 12.0
+        cfg.utility_cost_weight = 0.08
+        cfg.utility_correctness_bce_weight = 0.10
+        cfg.joint_halt_candidate_ce_weight = 1.00
+        cfg.joint_halt_candidate_distill_weight = 0.15
+        cfg.joint_halt_verifier_bce_weight = 0.08
+        cfg.joint_halt_stability_weight = 0.05
+        cfg.joint_halt_agreement_bce_weight = 0.08
+        cfg.router_val_batches = 64
+        cfg.router_threshold_candidates = "0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80,0.85,0.90,0.95,0.97,0.99"
+        cfg.timing_batches = 16
+        cfg.timing_batch_sizes = "1,2,4,8,16,32,64"
+        cfg.eval_batches = 128
+        if is_highval_reuse:
+            cfg.router_val_batches = 256
+            cfg.eval_batches = 256
+            cfg.router_threshold_candidates = (
+                "0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,"
+                "0.50,0.60,0.70,0.80,0.85,0.90,0.95,0.97,0.99"
+            )
+            cfg.timing_batches = 8
+            cfg.timing_batch_sizes = "1,64"
+            cfg.router_probe_audit = True
+            cfg.router_selective_agree_audit = True
+        cfg.log_every = 500
+    elif mode in (
         "core3_8n4h_strathop_joint_halt",
         "core3_8n4h_strathop_polish2_joint_halt",
         "core3_8n4h_strathop_joint_halt_reuse",
@@ -2011,7 +2244,9 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
         torch.save(payload, checkpoint_path)
         print(f"[checkpoint] saved {checkpoint_path}", flush=True)
 
-    letters = [chr(ord("A") + i) for i in range(cfg.n_nodes)]
+    if cfg.prompt_style not in {"compact", "natural_graph"}:
+        raise ValueError(f"unknown prompt_style: {cfg.prompt_style}")
+    label_names = route_label_names(cfg.prompt_style, cfg.n_nodes)
     task_names = ["forward", "inverse", "alternate", "square"] if cfg.mixed_tasks else ["forward"]
 
     def parse_float_list(value: str) -> List[float]:
@@ -2111,9 +2346,15 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 for i in range(cfg.n_nodes)
             ]
             mapping_pairs.sort(key=lambda pair: pair[0])
-            mapping = " ".join(f"{letters[src]}->{letters[dst]}" for src, dst in mapping_pairs)
             task = task_names[display_task_id]
-            text = f"Task: {task}. Map: {mapping}. Start: {letters[label_map[start]]}. Hops: {display_hops}. Answer:"
+            text = format_route_prompt(
+                cfg.prompt_style,
+                task,
+                mapping_pairs,
+                label_names,
+                label_map[start],
+                display_hops,
+            )
             after_answer = text.split("Answer:", 1)[1]
             if after_answer.strip():
                 raise AssertionError("generated prompt leaked text after Answer:")
@@ -7245,6 +7486,9 @@ if __name__ == "__main__":
         default="dry",
         choices=[
             "dry",
+            "dry_natgraph_teacher",
+            "dry_natgraph_joint_halt_quality_stability",
+            "dry_natgraph_joint_halt_quality_stability_reuse",
             "dry_hardhop",
             "dry_strathop",
             "dry_strathop_gate",
@@ -7306,10 +7550,12 @@ if __name__ == "__main__":
             "core3_8n4h_hardhop_teacher",
             "core3_8n4h_hardhop_jumprec",
             "core3_8n4h_strathop_teacher",
+            "core3_8n4h_natgraph_teacher",
             "core3_8n4h_strathop_gate_teacher",
             "core3_8n4h_strathop_polish_teacher",
             "core3_8n4h_strathop_polish2_teacher",
             "core3_8n4h_strathop_eval_teacher",
+            "core3_8n4h_natgraph_eval_teacher",
             "core3_8n4h_strathop_polish2_eval_teacher",
             "core3_8n4h_strathop_audit_teacher",
             "core3_8n4h_strathop_polish2_audit_teacher",
@@ -7377,6 +7623,9 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse",
             "core3_8n4h_strathop_joint_halt_quality_cats_reuse_highval",
             "core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse_highval",
+            "core3_8n4h_natgraph_joint_halt_quality_stability",
+            "core3_8n4h_natgraph_joint_halt_quality_stability_reuse",
+            "core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval",
             "core3_8n4h_strathop_joint_halt_quality_stability",
             "core3_8n4h_strathop_polish2_joint_halt_quality_stability",
             "core3_8n4h_strathop_joint_halt_quality_stability_reuse",
@@ -7414,6 +7663,9 @@ if __name__ == "__main__":
         raise SystemExit("Use `modal run run_recurrent_smol.py --mode retrofit_probe`, or add `--local`.")
     if args.mode not in (
         "dry",
+        "dry_natgraph_teacher",
+        "dry_natgraph_joint_halt_quality_stability",
+        "dry_natgraph_joint_halt_quality_stability_reuse",
         "dry_hardhop",
         "dry_strathop",
         "dry_strathop_gate",

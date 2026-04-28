@@ -649,10 +649,23 @@ Short-term engineering queue:
 
 1. Keep the new `tests/` guardrails green before adding more modes.
 2. Use `experiments/CHECKPOINT_MANIFEST.md` when launching reuse/highval runs.
-3. Build the first general looped-LLM application test around the selective
+3. Run the new `core3_8n4h_natgraph_*` bridge path around the selective
    agreement contract and report batch-1 timing first.
 4. Add a throughput follow-up that tests grouped/cached adjacent checks at
    larger batch sizes.
 5. Split the first reusable surfaces out of `run_recurrent_smol.py`: config
    resolution, held-out audit/selector logic, and checkpoint manifests are the
    highest-leverage extraction points.
+
+New bridge modes added after the selective-agreement housekeeping pass:
+
+```powershell
+python .\run_recurrent_smol.py --mode dry_natgraph_teacher --local
+python .\run_recurrent_smol.py --mode dry_natgraph_joint_halt_quality_stability --local
+python .\run_recurrent_smol.py --mode dry_natgraph_joint_halt_quality_stability_reuse --local
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_joint_halt_quality_stability --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval --seed 101
+```
+
+Do not fan this out until the seed-101 teacher gate is healthy.

@@ -100,10 +100,26 @@ path, held-out audit, and timing keys.
 - Current checkpoint family: quality plus jointly trained stability.
 - Current claim regime: synthetic recurrence benchmark, small-batch adaptive
   inference.
-- Current next application step: build the first small-batch general looped-LLM
-  application probe around selective agreement.
+- Current next application step: run the natural-language graph traversal
+  bridge probe around selective agreement.
 - Current throughput step: test grouped or cached adjacent checks so selective
   agreement does not fragment batch-64 execution.
+
+## Application Bridge
+
+The first bridge beyond compact symbolic prompts is now wired as `natgraph`.
+It keeps the same controlled recurrence target but presents the task as a
+natural-language route card:
+
+```text
+core3_8n4h_natgraph_teacher
+core3_8n4h_natgraph_joint_halt_quality_stability
+core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval
+```
+
+This is not yet a broad language-modeling claim. It is the next gate: check
+whether the recurrent teacher, JumpRec candidate path, and selective-agreement
+controller survive a more realistic language interface.
 
 ## What Is Historical Or Diagnostic
 
