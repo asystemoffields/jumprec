@@ -3451,3 +3451,69 @@ but the scalable one-candidate controller has not matched the agreement
 frontier. The next serious work should either harden/refactor the experiment
 surface or test a stronger mechanism that changes the candidate trajectory or
 controller supervision more radically than the current auxiliary heads.
+
+## 2026-04-28 - one-candidate probe upper-bound audit
+
+To answer whether the current one-candidate path contains enough deployable
+information to replace adjacent-budget agreement, the held-out audit now trains
+offline probes on the best current `*_joint_halt_quality_stability` checkpoints.
+For each seed, the 256 validation batches are split into 8,192 probe-training
+examples and 8,192 threshold-selection examples; the final report remains a
+separate 16,384-example split. Probes are logistic or one-hidden-layer MLPs,
+trained either on scalar candidate/router features or on the richer normalized
+hidden readout plus logits/probabilities and scalar features. Targets are:
+
+- `agreement`: predict whether true adjacent-budget agreement would accept the
+  candidate;
+- `correct`: predict whether the candidate answer is label-correct.
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse_highval --seed 42
+```
+
+Baseline means from the same rerun:
+
+| Selector | Utility Acc | Utility Core | Agreement Acc | Agreement Core |
+|---|---:|---:|---:|---:|
+| Speed | 99.628% | 2.87 / 18 | 99.711% | 2.71 / 18 |
+| Teacher floor | 99.648% | 2.88 / 18 | 99.711% | 2.71 / 18 |
+| Teacher +0.1 pp | 99.687% | 2.99 / 18 | 99.742% | 2.76 / 18 |
+| Teacher +0.2 pp | 99.705% | 3.03 / 18 | 99.748% | 2.79 / 18 |
+
+Best probe-selected routes by scenario:
+
+| Selector | Best probe route | Probe target | Probe Acc | Probe Core | Target AUC |
+|---|---|---|---:|---:|---:|
+| Speed | scalar logistic, global threshold | correct | 99.526% | 3.20 / 18 | 0.981 |
+| Teacher floor | rich MLP, global threshold | agreement | 99.654% | 3.47 / 18 | 0.994 |
+| Teacher +0.1 pp | rich logistic, global threshold | correct | 99.740% | 3.42 / 18 | 0.985 |
+| Teacher +0.2 pp | scalar logistic, per-budget thresholds | agreement | 99.768% | 4.09 / 18 | 0.962 |
+
+Interpretation:
+
+The rich agreement probes can predict the agreement target with high AUC
+(about 0.994), so the current candidate representation is not blank. But the
+probe-selected routes still fail the frontier test. At speed and teacher-floor
+operating points, no probe matches true agreement's accuracy, and the closest
+probes spend substantially more counted core. At teacher-plus-0.1 pp, the best
+probe nearly matches agreement accuracy but still spends about 0.66 more core
+layers. At teacher-plus-0.2 pp, some correctness/agreement probes can slightly
+exceed agreement accuracy, but only by spending roughly 0.8 to 1.3 more counted
+core layers.
+
+Conclusion:
+
+This answers the bottleneck question for the current representation: one
+candidate contains useful agreement/correctness signal, but not enough
+rare-error separability to reproduce the adjacent-budget agreement
+quality/cost frontier. The blocker is not just the learned utility head being
+too small. Even offline probes with richer hidden features do not recover the
+agreement route at the same compute. The next viable move should change the
+architecture contract or candidate trajectory, for example an ambiguous-case
+second check, an explicit consistency certificate trained into the candidate
+state, or monotone/stability constraints that make agreement unnecessary rather
+than merely predicted.

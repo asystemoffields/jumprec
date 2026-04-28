@@ -578,12 +578,16 @@ Immediate router pivot:
    conceptually weak.
 9. Treat `quality_stability` as the best current deployable checkpoint family
    for high-quality utility audits, but not as a promoted agreement replacement.
-10. Keep `agree_then_utility_099` as a diagnostic/reference hybrid only. It
+10. Treat one-candidate offline probes as a negative upper-bound result for the
+   current candidate representation. They rank agreement/correctness well, but
+   still do not recover agreement's quality/cost frontier under held-out route
+   selection.
+11. Keep `agree_then_utility_099` as a diagnostic/reference hybrid only. It
    nearly tracks agreement, but it is not the scalable one-candidate answer.
-11. Keep true agreement as the quality reference and no-agreement/utility as the
+12. Keep true agreement as the quality reference and no-agreement/utility as the
    speed-shape reference; a new mode only matters if it lands between them in
    the right direction.
-12. If seed 42 or 202 fail, inspect whether the failure is candidate
+13. If seed 42 or 202 fail, inspect whether the failure is candidate
    degradation, over-acceptance, fallback overuse, or utility calibration before
    adding a new mechanism.
 
@@ -611,13 +615,24 @@ also failed to close the frontier. Quality-stability is the best current
 deployable high-quality branch, but it still trails true agreement while using
 more counted core at the same selector scenarios.
 
+The one-candidate probe upper-bound audit answers the next fork. Offline
+logistic/MLP probes trained on scalar candidate/router features or richer
+hidden-readout features can predict agreement labels well, with rich agreement
+probes around 0.994 AUC. But route selection still does not match true
+agreement's frontier: at speed and teacher-floor selectors no probe reaches
+agreement accuracy, and at teacher-plus selectors the probes that match or
+slightly exceed agreement accuracy spend substantially more counted core. That
+means the current one-candidate representation has useful signal but not enough
+rare-error separability to replace adjacent-budget agreement at the same
+compute.
+
 The next research step should either:
 
 1. harden/refactor the runner enough that new router ideas can be tested without
    widening one giant script further; or
-2. test a stronger deployable agreement substitute that changes training rather
-   than only adding a post-hoc head, while keeping the one-candidate inference
-   contract.
+2. change the architecture contract: an ambiguous-case second check, an explicit
+   consistency certificate, or candidate-trajectory constraints that make
+   adjacent-budget agreement unnecessary instead of merely predicted.
 
 Short-term engineering queue:
 

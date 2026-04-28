@@ -66,6 +66,20 @@ class JointHaltConfigTests(unittest.TestCase):
                 self.assertEqual(cfg.router_val_batches, 256)
                 self.assertEqual(cfg.eval_batches, 256)
 
+    def test_probe_audit_is_scoped_to_quality_stability_highval(self):
+        probe_cfg = smol.config_for_mode(
+            "core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval"
+        )
+        self.assertTrue(probe_cfg.router_probe_audit)
+        self.assertEqual(probe_cfg.joint_halt_steps, 0)
+        self.assertEqual(probe_cfg.router_val_batches, 256)
+        self.assertEqual(probe_cfg.eval_batches, 256)
+
+        plain_quality_cfg = smol.config_for_mode(
+            "core3_8n4h_strathop_joint_halt_quality_reuse_highval"
+        )
+        self.assertFalse(plain_quality_cfg.router_probe_audit)
+
     def test_slo_modes_sample_route_operating_point(self):
         cfg = smol.config_for_mode("core3_8n4h_strathop_joint_halt_slo")
         self.assertGreater(cfg.joint_halt_false_accept_weight_max, cfg.utility_false_accept_weight)
@@ -128,6 +142,8 @@ class JointHaltConfigTests(unittest.TestCase):
         self.assertIn("def utility_router_agreement_bce", source)
         self.assertIn("def joint_halt_agreement_distill_loss", source)
         self.assertIn("def candidate_agreement_prob_stack", source)
+        self.assertIn("def run_router_probe_audit", source)
+        self.assertIn("probe_upper_bound", source)
         self.assertIn("weights[-1] = 0.0", source)
         self.assertIn("stable_target[-1] = (pred_stack[-1] == full_pred).float()", source)
 

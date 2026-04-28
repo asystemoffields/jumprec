@@ -152,6 +152,10 @@ class Config:
     router_val_max_drop: float = 0.0025
     router_threshold_candidates: str = "0.50,0.60,0.70,0.80,0.85,0.90,0.95,0.97,0.99"
     router_per_budget_audit: bool = False
+    router_probe_audit: bool = False
+    router_probe_steps: int = 120
+    router_probe_lr: float = 3e-3
+    router_probe_hidden: int = 64
 
     @property
     def loop_steps(self) -> int:
@@ -729,6 +733,8 @@ def config_for_mode(mode: str) -> Config:
             cfg.router_val_batches = 1
             cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
             cfg.timing_batch_sizes = "1,2"
+            cfg.router_probe_audit = use_joint_stability
+            cfg.router_probe_steps = 12
         elif mode in (
             "dry_strathop_polish2_joint_halt_reuse",
             "dry_strathop_polish2_joint_halt_stability_reuse",
@@ -793,6 +799,8 @@ def config_for_mode(mode: str) -> Config:
             cfg.router_val_batches = 1
             cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
             cfg.timing_batch_sizes = "1,2"
+            cfg.router_probe_audit = use_joint_stability
+            cfg.router_probe_steps = 12
         elif mode in (
             "dry_strathop_polish2_joint_halt_quality_cats",
             "dry_strathop_polish2_joint_halt_quality_cats_reuse",
@@ -1867,6 +1875,7 @@ def config_for_mode(mode: str) -> Config:
             )
             cfg.timing_batches = 8
             cfg.timing_batch_sizes = "1,64"
+            cfg.router_probe_audit = use_quality_objective and use_joint_stability
         cfg.log_every = 500
     elif mode in (
         "core3_8n4h_strathop_ablate_no_adapter",
@@ -4785,6 +4794,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 }
                 if cfg.use_utility_router:
                     records["utility"] = []
+                if cfg.router_probe_audit:
+                    records["agree"] = []
+                    records["entropy"] = []
+                    records["probs"] = []
+                    records["features"] = []
+                    if cfg.use_stability_head:
+                        records["stability"] = []
                 with torch.no_grad():
                     for _ in range(num_batches):
                         input_ids, attention_mask, lengths, target, _, _, _ = batch_encoded(
@@ -4828,6 +4844,35 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                             )
                         records["margin"].append((top2[:, :, 0] - top2[:, :, 1]).detach().cpu())
                         records["max_prob"].append(top2[:, :, 0].detach().cpu())
+                        if cfg.router_probe_audit:
+                            log_probs = F.log_softmax(logits_stack, dim=-1)
+                            entropy = -(probs * log_probs).sum(dim=-1) / math.log(cfg.n_nodes)
+                            agree_stack = torch.zeros_like(pred_stack, dtype=torch.bool)
+                            if cfg.max_correct > 0:
+                                agree_stack[:-1] = pred_stack[:-1] == pred_stack[1:]
+                            feature_stack = torch.stack(
+                                [
+                                    jumprec.verifier_features(final_state, logits_i, lengths)
+                                    for final_state, logits_i in zip(
+                                        jump_out["final_states"],
+                                        jump_out["logits"],
+                                    )
+                                ],
+                                dim=0,
+                            )
+                            records["agree"].append(agree_stack.detach().cpu())
+                            records["entropy"].append(entropy.detach().cpu())
+                            records["probs"].append(probs.detach().cpu())
+                            records["features"].append(feature_stack.detach().cpu())
+                            if cfg.use_stability_head:
+                                records["stability"].append(
+                                    torch.stack(
+                                        [torch.sigmoid(v) for v in jump_out["stability"]],
+                                        dim=0,
+                                    )
+                                    .detach()
+                                    .cpu()
+                                )
                 out_records = {
                     "full_correct": torch.cat(records["full_correct"], dim=0),
                     "pred_correct": torch.cat(records["pred_correct"], dim=1),
@@ -4837,6 +4882,13 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 }
                 if cfg.use_utility_router:
                     out_records["utility"] = torch.cat(records["utility"], dim=1)
+                if cfg.router_probe_audit:
+                    out_records["agree"] = torch.cat(records["agree"], dim=1)
+                    out_records["entropy"] = torch.cat(records["entropy"], dim=1)
+                    out_records["probs"] = torch.cat(records["probs"], dim=1)
+                    out_records["features"] = torch.cat(records["features"], dim=1)
+                    if cfg.use_stability_head:
+                        out_records["stability"] = torch.cat(records["stability"], dim=1)
                 return out_records
 
             def per_budget_route_item(thresholds_by_budget, trusted, chosen, routed_correct):
@@ -4981,10 +5033,11 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 monotone: bool = False,
                 guarded: bool = False,
                 max_exhaustive_combinations: int = 20000,
+                max_drop: float | None = None,
             ):
                 threshold_values = sorted(set(float(t) for t in threshold_values))
                 full_teacher_acc = records["full_correct"].float().mean().item()
-                floor = full_teacher_acc - cfg.router_val_max_drop
+                floor = full_teacher_acc - (cfg.router_val_max_drop if max_drop is None else max_drop)
                 best_acceptable = None
                 best_overall = None
                 num_budgets = cfg.max_correct + 1
@@ -5066,6 +5119,289 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 thresholds_by_budget, item, reason = current_best()
                 item["threshold_search"] = search_method
                 return thresholds_by_budget, item, reason, floor, full_teacher_acc
+
+            def slice_router_records(records, start: int, end: int):
+                n = int(records["full_correct"].numel())
+                sliced = {}
+                for key, value in records.items():
+                    if not torch.is_tensor(value):
+                        sliced[key] = value
+                    elif value.dim() == 1 and value.size(0) == n:
+                        sliced[key] = value[start:end].clone()
+                    elif (
+                        value.dim() >= 2
+                        and value.size(0) == cfg.max_correct + 1
+                        and value.size(1) == n
+                    ):
+                        sliced[key] = value[:, start:end].clone()
+                    else:
+                        sliced[key] = value.clone()
+                return sliced
+
+            def with_probe_scores(records, score_stack):
+                scored = dict(records)
+                scored["utility"] = score_stack.detach().cpu()
+                return scored
+
+            def build_probe_features(records, feature_set: str):
+                verify = records["verify"].float()
+                num_budgets, num_examples = verify.shape
+                budget_idx = torch.arange(num_budgets, dtype=verify.dtype).view(num_budgets, 1, 1)
+                budget_frac = budget_idx.expand(num_budgets, num_examples, 1) / max(1, num_budgets - 1)
+                core_frac_values = (
+                    float(cfg.jump_layers)
+                    + torch.arange(num_budgets, dtype=verify.dtype) * float(cfg.core_layers)
+                ) / full_core_layers
+                core_frac = core_frac_values.view(num_budgets, 1, 1).expand(num_budgets, num_examples, 1)
+                scalar_parts = [
+                    verify.unsqueeze(-1),
+                    records["margin"].float().unsqueeze(-1),
+                    records["max_prob"].float().unsqueeze(-1),
+                    records["entropy"].float().unsqueeze(-1),
+                    budget_frac,
+                    core_frac,
+                ]
+                if "utility" in records:
+                    scalar_parts.append(records["utility"].float().unsqueeze(-1))
+                if "stability" in records:
+                    scalar_parts.append(records["stability"].float().unsqueeze(-1))
+                if feature_set == "scalar":
+                    return torch.cat(scalar_parts, dim=-1)
+                if feature_set == "rich":
+                    budget_onehot = F.one_hot(torch.arange(num_budgets), num_classes=num_budgets).float()
+                    budget_onehot = budget_onehot.view(num_budgets, 1, num_budgets).expand(
+                        num_budgets,
+                        num_examples,
+                        num_budgets,
+                    )
+                    return torch.cat(
+                        [
+                            records["features"].float(),
+                            records["probs"].float(),
+                            torch.cat(scalar_parts, dim=-1),
+                            budget_onehot,
+                        ],
+                        dim=-1,
+                    )
+                raise ValueError(f"unknown probe feature set: {feature_set}")
+
+            def probe_target_stack(records, target_name: str):
+                if target_name == "agreement":
+                    return records["agree"].float()
+                if target_name == "correct":
+                    return records["pred_correct"].float()
+                raise ValueError(f"unknown probe target: {target_name}")
+
+            def binary_rank_metrics(scores, labels):
+                scores = scores.detach().flatten().float().cpu()
+                labels = labels.detach().flatten().bool().cpu()
+                total = int(labels.numel())
+                pos = int(labels.sum().item())
+                neg = total - pos
+                out = {
+                    "examples": total,
+                    "positive_rate": pos / total if total else None,
+                    "auc": None,
+                    "ap": None,
+                }
+                if pos == 0 or neg == 0:
+                    return out
+                order_desc = torch.argsort(scores, descending=True)
+                sorted_labels = labels[order_desc].float()
+                rank = torch.arange(1, total + 1, dtype=torch.float32)
+                precision_at_rank = torch.cumsum(sorted_labels, dim=0) / rank
+                out["ap"] = float((precision_at_rank * sorted_labels).sum().item() / pos)
+                order_asc = torch.argsort(scores)
+                asc_labels = labels[order_asc]
+                asc_ranks = torch.arange(1, total + 1, dtype=torch.float32)
+                rank_sum = asc_ranks[asc_labels].sum().item()
+                auc = (rank_sum - pos * (pos + 1) / 2.0) / (pos * neg)
+                out["auc"] = float(auc)
+                return out
+
+            def fit_probe_scores(train_records, tune_records, final_records, target_name: str, feature_set: str, model_kind: str):
+                train_features = build_probe_features(train_records, feature_set)
+                tune_features = build_probe_features(tune_records, feature_set)
+                final_features = build_probe_features(final_records, feature_set)
+                num_budgets, _, feature_dim = train_features.shape
+                x_train = train_features.reshape(-1, feature_dim).to(device)
+                y_train = probe_target_stack(train_records, target_name).reshape(-1).to(device)
+                mean = x_train.mean(dim=0, keepdim=True)
+                std = x_train.std(dim=0, keepdim=True).clamp_min(1e-4)
+                x_train = (x_train - mean) / std
+                pos = float(y_train.sum().item())
+                total = float(y_train.numel())
+                neg = total - pos
+
+                def score_features(feature_stack, model_obj=None, constant_prob=None):
+                    x = feature_stack.reshape(-1, feature_dim).to(device)
+                    x = (x - mean) / std
+                    if constant_prob is not None:
+                        scores = torch.full((x.size(0),), float(constant_prob), dtype=torch.float32, device=device)
+                    else:
+                        with torch.no_grad():
+                            scores = torch.sigmoid(model_obj(x).squeeze(-1))
+                    return scores.view(num_budgets, -1).detach().cpu()
+
+                if pos <= 0.0 or neg <= 0.0:
+                    constant = pos / max(1.0, total)
+                    return {
+                        "tune_scores": score_features(tune_features, constant_prob=constant),
+                        "final_scores": score_features(final_features, constant_prob=constant),
+                        "feature_dim": feature_dim,
+                        "loss": None,
+                        "constant": constant,
+                    }
+
+                if model_kind == "logistic":
+                    model_obj = nn.Linear(feature_dim, 1).to(device)
+                elif model_kind == "mlp":
+                    model_obj = nn.Sequential(
+                        nn.Linear(feature_dim, cfg.router_probe_hidden),
+                        nn.GELU(),
+                        nn.Linear(cfg.router_probe_hidden, 1),
+                    ).to(device)
+                else:
+                    raise ValueError(f"unknown probe model: {model_kind}")
+                pos_weight = torch.tensor([neg / max(1.0, pos)], dtype=torch.float32, device=device)
+                opt_probe = torch.optim.AdamW(model_obj.parameters(), lr=cfg.router_probe_lr, weight_decay=1e-4)
+                loss_value = 0.0
+                for _ in range(cfg.router_probe_steps):
+                    opt_probe.zero_grad(set_to_none=True)
+                    logits = model_obj(x_train).squeeze(-1)
+                    loss = F.binary_cross_entropy_with_logits(logits, y_train, pos_weight=pos_weight)
+                    loss.backward()
+                    opt_probe.step()
+                    loss_value = float(loss.item())
+                return {
+                    "tune_scores": score_features(tune_features, model_obj=model_obj),
+                    "final_scores": score_features(final_features, model_obj=model_obj),
+                    "feature_dim": feature_dim,
+                    "loss": loss_value,
+                    "constant": None,
+                }
+
+            def choose_probe_global_threshold(records, score_stack, threshold_values, max_drop: float, guarded: bool = False):
+                scored_records = with_probe_scores(records, score_stack)
+                full_teacher_acc = records["full_correct"].float().mean().item()
+                floor = full_teacher_acc - max_drop
+                best_acceptable = None
+                best_overall = None
+                for threshold in threshold_values:
+                    thresholds_by_budget = [float(threshold) for _ in range(cfg.max_correct + 1)]
+                    item = evaluate_per_budget_utility_thresholds(
+                        scored_records,
+                        thresholds_by_budget,
+                        guarded=guarded,
+                    )
+                    item["threshold"] = float(threshold)
+                    acceptable_key = (item["avg_core_layers"], -item["acc"])
+                    overall_key = (item["acc"], -item["avg_core_layers"])
+                    if item["acc"] >= floor and (
+                        best_acceptable is None or acceptable_key < best_acceptable[0]
+                    ):
+                        best_acceptable = (acceptable_key, threshold, item)
+                    if best_overall is None or overall_key > best_overall[0]:
+                        best_overall = (overall_key, threshold, item)
+                if best_acceptable is not None:
+                    _, threshold, item = best_acceptable
+                    return threshold, item, "within_val_drop", floor, full_teacher_acc
+                _, threshold, item = best_overall
+                return threshold, item, "best_val_accuracy", floor, full_teacher_acc
+
+            def run_router_probe_audit(val_records, final_records, threshold_values, selection_drops):
+                num_examples = int(val_records["full_correct"].numel())
+                split = max(1, num_examples // 2)
+                split = min(split, num_examples - 1)
+                train_records = slice_router_records(val_records, 0, split)
+                tune_records = slice_router_records(val_records, split, num_examples)
+                probe_summary = {
+                    "train_examples": int(train_records["full_correct"].numel()),
+                    "tune_examples": int(tune_records["full_correct"].numel()),
+                    "final_examples": int(final_records["full_correct"].numel()),
+                    "probe_steps": cfg.router_probe_steps,
+                    "probes": {},
+                }
+                probe_specs = [
+                    ("agreement", "scalar", "logistic"),
+                    ("agreement", "scalar", "mlp"),
+                    ("agreement", "rich", "logistic"),
+                    ("agreement", "rich", "mlp"),
+                    ("correct", "scalar", "logistic"),
+                    ("correct", "scalar", "mlp"),
+                    ("correct", "rich", "logistic"),
+                    ("correct", "rich", "mlp"),
+                ]
+                for target_name, feature_set, model_kind in probe_specs:
+                    audit_name = f"{target_name}_{feature_set}_{model_kind}"
+                    fit = fit_probe_scores(
+                        train_records,
+                        tune_records,
+                        final_records,
+                        target_name,
+                        feature_set,
+                        model_kind,
+                    )
+                    scored_tune = with_probe_scores(tune_records, fit["tune_scores"])
+                    scored_final = with_probe_scores(final_records, fit["final_scores"])
+                    target_final = probe_target_stack(final_records, target_name)
+                    item = {
+                        "target": target_name,
+                        "feature_set": feature_set,
+                        "model": model_kind,
+                        "feature_dim": fit["feature_dim"],
+                        "train_loss": fit["loss"],
+                        "constant": fit["constant"],
+                        "target_metrics_final": binary_rank_metrics(fit["final_scores"], target_final),
+                        "selected_by_drop": {},
+                    }
+                    for scenario_name, max_drop in selection_drops.items():
+                        threshold, val_item, reason, floor, val_teacher = choose_probe_global_threshold(
+                            tune_records,
+                            fit["tune_scores"],
+                            threshold_values,
+                            max_drop=max_drop,
+                        )
+                        final_item = evaluate_per_budget_utility_thresholds(
+                            scored_final,
+                            [float(threshold) for _ in range(cfg.max_correct + 1)],
+                        )
+                        (
+                            per_budget_thresholds,
+                            per_budget_val,
+                            per_budget_reason,
+                            per_budget_floor,
+                            per_budget_teacher,
+                        ) = choose_per_budget_utility_thresholds(
+                            scored_tune,
+                            threshold_values,
+                            guarded=False,
+                            max_drop=max_drop,
+                        )
+                        per_budget_final = evaluate_per_budget_utility_thresholds(
+                            scored_final,
+                            per_budget_thresholds,
+                        )
+                        item["selected_by_drop"][scenario_name] = {
+                            "global": {
+                                "threshold": float(threshold),
+                                "selection_reason": reason,
+                                "val_accuracy_floor": floor,
+                                "val_full_teacher_acc": val_teacher,
+                                "val": val_item,
+                                "final": final_item,
+                            },
+                            "per_budget": {
+                                "thresholds": [float(t) for t in per_budget_thresholds],
+                                "selection_reason": per_budget_reason,
+                                "val_accuracy_floor": per_budget_floor,
+                                "val_full_teacher_acc": per_budget_teacher,
+                                "val": per_budget_val,
+                                "final": per_budget_final,
+                            },
+                        }
+                    probe_summary["probes"][audit_name] = item
+                return probe_summary
 
             def choose_heldout_threshold(
                 val_grid,
@@ -5723,6 +6059,14 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         "val": monotone_val,
                         "final": monotone_final,
                     }
+                if cfg.router_probe_audit:
+                    val_records, final_records = ensure_router_records()
+                    heldout_audit["probe_upper_bound"] = run_router_probe_audit(
+                        val_records,
+                        final_records,
+                        candidates,
+                        selection_drops,
+                    )
                 metrics["heldout_threshold_audit"] = heldout_audit
             jumprec.train()
             return metrics
