@@ -153,6 +153,7 @@ class Config:
     router_threshold_candidates: str = "0.50,0.60,0.70,0.80,0.85,0.90,0.95,0.97,0.99"
     router_per_budget_audit: bool = False
     router_probe_audit: bool = False
+    router_selective_agree_audit: bool = False
     router_probe_steps: int = 120
     router_probe_lr: float = 3e-3
     router_probe_hidden: int = 64
@@ -734,6 +735,7 @@ def config_for_mode(mode: str) -> Config:
             cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
             cfg.timing_batch_sizes = "1,2"
             cfg.router_probe_audit = use_joint_stability
+            cfg.router_selective_agree_audit = use_joint_stability
             cfg.router_probe_steps = 12
         elif mode in (
             "dry_strathop_polish2_joint_halt_reuse",
@@ -800,6 +802,7 @@ def config_for_mode(mode: str) -> Config:
             cfg.router_threshold_candidates = "0.10,0.30,0.50,0.70,0.90"
             cfg.timing_batch_sizes = "1,2"
             cfg.router_probe_audit = use_joint_stability
+            cfg.router_selective_agree_audit = use_joint_stability
             cfg.router_probe_steps = 12
         elif mode in (
             "dry_strathop_polish2_joint_halt_quality_cats",
@@ -1876,6 +1879,7 @@ def config_for_mode(mode: str) -> Config:
             cfg.timing_batches = 8
             cfg.timing_batch_sizes = "1,64"
             cfg.router_probe_audit = use_quality_objective and use_joint_stability
+            cfg.router_selective_agree_audit = use_quality_objective and use_joint_stability
         cfg.log_every = 500
     elif mode in (
         "core3_8n4h_strathop_ablate_no_adapter",
@@ -4794,8 +4798,10 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 }
                 if cfg.use_utility_router:
                     records["utility"] = []
-                if cfg.router_probe_audit:
+                needs_agreement_records = cfg.router_probe_audit or cfg.router_selective_agree_audit
+                if needs_agreement_records:
                     records["agree"] = []
+                if cfg.router_probe_audit:
                     records["entropy"] = []
                     records["probs"] = []
                     records["features"] = []
@@ -4844,12 +4850,14 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                             )
                         records["margin"].append((top2[:, :, 0] - top2[:, :, 1]).detach().cpu())
                         records["max_prob"].append(top2[:, :, 0].detach().cpu())
-                        if cfg.router_probe_audit:
-                            log_probs = F.log_softmax(logits_stack, dim=-1)
-                            entropy = -(probs * log_probs).sum(dim=-1) / math.log(cfg.n_nodes)
+                        if needs_agreement_records:
                             agree_stack = torch.zeros_like(pred_stack, dtype=torch.bool)
                             if cfg.max_correct > 0:
                                 agree_stack[:-1] = pred_stack[:-1] == pred_stack[1:]
+                            records["agree"].append(agree_stack.detach().cpu())
+                        if cfg.router_probe_audit:
+                            log_probs = F.log_softmax(logits_stack, dim=-1)
+                            entropy = -(probs * log_probs).sum(dim=-1) / math.log(cfg.n_nodes)
                             feature_stack = torch.stack(
                                 [
                                     jumprec.verifier_features(final_state, logits_i, lengths)
@@ -4860,7 +4868,6 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                                 ],
                                 dim=0,
                             )
-                            records["agree"].append(agree_stack.detach().cpu())
                             records["entropy"].append(entropy.detach().cpu())
                             records["probs"].append(probs.detach().cpu())
                             records["features"].append(feature_stack.detach().cpu())
@@ -4882,8 +4889,9 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 }
                 if cfg.use_utility_router:
                     out_records["utility"] = torch.cat(records["utility"], dim=1)
-                if cfg.router_probe_audit:
+                if needs_agreement_records:
                     out_records["agree"] = torch.cat(records["agree"], dim=1)
+                if cfg.router_probe_audit:
                     out_records["entropy"] = torch.cat(records["entropy"], dim=1)
                     out_records["probs"] = torch.cat(records["probs"], dim=1)
                     out_records["features"] = torch.cat(records["features"], dim=1)
@@ -5000,6 +5008,92 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     routed_correct[accept] = pred_correct[c, accept]
                     trusted |= accept
                 return per_budget_route_item(thresholds_by_budget, trusted, chosen, routed_correct)
+
+            def selective_agree_item(
+                verify_threshold,
+                direct_floor,
+                agree_floor,
+                trusted,
+                chosen,
+                routed_correct,
+                agreement_checks,
+                agreement_check_core,
+            ):
+                item = per_budget_route_item(
+                    [float(verify_threshold) for _ in range(cfg.max_correct + 1)],
+                    trusted,
+                    chosen,
+                    routed_correct,
+                )
+                n = max(1, routed_correct.numel())
+                item["verify_threshold"] = float(verify_threshold)
+                item["direct_floor"] = float(direct_floor)
+                item["agree_floor"] = float(agree_floor)
+                item["agreement_check_count"] = int(agreement_checks.sum().item())
+                item["agreement_check_rate"] = float(agreement_checks.float().mean().item())
+                item["agreement_check_core_layers"] = float(agreement_check_core.float().sum().item() / n)
+                item["effective_core_layers_with_checks"] = (
+                    item["avg_core_layers"] + item["agreement_check_core_layers"]
+                )
+                item["effective_core_savings_vs_full_pct"] = (
+                    1.0 - item["effective_core_layers_with_checks"] / full_core_layers
+                ) * 100.0
+                return item
+
+            def evaluate_selective_agree(
+                records,
+                verify_threshold: float,
+                direct_floor: float,
+                agree_floor: float,
+            ):
+                full_correct = records["full_correct"].bool()
+                pred_correct = records["pred_correct"].bool()
+                utility = records["utility"]
+                verify = records["verify"]
+                margin = records["margin"]
+                max_prob = records["max_prob"]
+                agree = records["agree"].bool()
+                n = full_correct.numel()
+                trusted = torch.zeros(n, dtype=torch.bool)
+                chosen = torch.full((n,), cfg.loop_steps, dtype=torch.long)
+                routed_correct = full_correct.clone()
+                agreement_checks = torch.zeros(n, dtype=torch.long)
+                agreement_check_core = torch.zeros(n, dtype=torch.float32)
+                for c in range(cfg.max_correct + 1):
+                    direct = (~trusted) & (utility[c] >= float(direct_floor))
+                    chosen[direct] = c
+                    routed_correct[direct] = pred_correct[c, direct]
+                    trusted |= direct
+
+                    # The final budget has no adjacent-budget partner, so it can
+                    # only be accepted directly or fall through to the teacher.
+                    if c >= cfg.max_correct:
+                        continue
+                    check = (
+                        (~trusted)
+                        & (utility[c] >= float(agree_floor))
+                        & (verify[c] >= float(verify_threshold))
+                        & (margin[c] >= 0.05)
+                        & (max_prob[c] >= 0.45)
+                    )
+                    agreement_checks += check.long()
+                    agreement_check_core += check.float() * (
+                        float(cfg.jump_layers) + float((c + 1) * cfg.core_layers)
+                    )
+                    accept = check & agree[c]
+                    chosen[accept] = c
+                    routed_correct[accept] = pred_correct[c, accept]
+                    trusted |= accept
+                return selective_agree_item(
+                    verify_threshold,
+                    direct_floor,
+                    agree_floor,
+                    trusted,
+                    chosen,
+                    routed_correct,
+                    agreement_checks,
+                    agreement_check_core,
+                )
 
             def choose_per_budget_thresholds(records, threshold_values, monotone: bool = False):
                 full_teacher_acc = records["full_correct"].float().mean().item()
@@ -5119,6 +5213,66 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 thresholds_by_budget, item, reason = current_best()
                 item["threshold_search"] = search_method
                 return thresholds_by_budget, item, reason, floor, full_teacher_acc
+
+            def choose_selective_agree_thresholds(
+                records,
+                verify_threshold_values,
+                max_drop: float | None = None,
+                check_penalty: float = 0.0,
+            ):
+                full_teacher_acc = records["full_correct"].float().mean().item()
+                floor = full_teacher_acc - (cfg.router_val_max_drop if max_drop is None else max_drop)
+                utility_values = [0.0, 0.30, 0.50, 0.70, 0.80, 0.90, 0.95, 0.97, 0.99]
+                direct_values = [0.90, 0.95, 0.97, 0.99, 1.01]
+                best_acceptable = None
+                best_overall = None
+                for verify_threshold in verify_threshold_values:
+                    for direct_floor in direct_values:
+                        for agree_floor in utility_values:
+                            if direct_floor <= agree_floor:
+                                continue
+                            item = evaluate_selective_agree(
+                                records,
+                                verify_threshold,
+                                direct_floor,
+                                agree_floor,
+                            )
+                            cost = item["avg_core_layers"] + float(check_penalty) * item["agreement_check_rate"]
+                            effective_cost = item["effective_core_layers_with_checks"]
+                            acceptable_key = (
+                                cost,
+                                item["agreement_check_rate"],
+                                effective_cost,
+                                -item["acc"],
+                            )
+                            overall_key = (
+                                item["acc"],
+                                -cost,
+                                -item["agreement_check_rate"],
+                            )
+                            if item["acc"] >= floor and (
+                                best_acceptable is None or acceptable_key < best_acceptable[0]
+                            ):
+                                best_acceptable = (
+                                    acceptable_key,
+                                    verify_threshold,
+                                    direct_floor,
+                                    agree_floor,
+                                    item,
+                                )
+                            if best_overall is None or overall_key > best_overall[0]:
+                                best_overall = (
+                                    overall_key,
+                                    verify_threshold,
+                                    direct_floor,
+                                    agree_floor,
+                                    item,
+                                )
+                if best_acceptable is not None:
+                    _, verify_threshold, direct_floor, agree_floor, item = best_acceptable
+                    return verify_threshold, direct_floor, agree_floor, item, "within_val_drop", floor, full_teacher_acc
+                _, verify_threshold, direct_floor, agree_floor, item = best_overall
+                return verify_threshold, direct_floor, agree_floor, item, "best_val_accuracy", floor, full_teacher_acc
 
             def slice_router_records(records, start: int, end: int):
                 n = int(records["full_correct"].numel())
@@ -6019,6 +6173,51 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         "val": utility_monotone_val,
                         "final": utility_monotone_final,
                     }
+                if cfg.router_selective_agree_audit and cfg.use_utility_router:
+                    val_records, final_records = ensure_router_records()
+                    selective = {}
+                    check_penalties = {
+                        "core_only": 0.0,
+                        "check_025": 0.25,
+                        "check_050": 0.50,
+                        "check_100": 1.00,
+                    }
+                    for scenario_name, max_drop in selection_drops.items():
+                        scenario = {}
+                        for penalty_name, check_penalty in check_penalties.items():
+                            (
+                                verify_threshold,
+                                direct_floor,
+                                agree_floor,
+                                selective_val,
+                                selective_reason,
+                                selective_floor,
+                                selective_val_teacher,
+                            ) = choose_selective_agree_thresholds(
+                                val_records,
+                                candidates,
+                                max_drop=max_drop,
+                                check_penalty=check_penalty,
+                            )
+                            selective_final = evaluate_selective_agree(
+                                final_records,
+                                verify_threshold,
+                                direct_floor,
+                                agree_floor,
+                            )
+                            scenario[penalty_name] = {
+                                "selection_reason": selective_reason,
+                                "val_accuracy_floor": selective_floor,
+                                "val_full_teacher_acc": selective_val_teacher,
+                                "verify_threshold": float(verify_threshold),
+                                "direct_floor": float(direct_floor),
+                                "agree_floor": float(agree_floor),
+                                "check_penalty": float(check_penalty),
+                                "val": selective_val,
+                                "final": selective_final,
+                            }
+                        selective[scenario_name] = scenario
+                    heldout_audit["selective_agreement"] = selective
                 if cfg.router_per_budget_audit:
                     val_records, final_records = ensure_router_records()
                     (
@@ -6406,6 +6605,14 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                     lambda ids, mask, lens: serial_jumprec_stable(ids, mask, lens, 0.90, 0.70)
                 )
             if cfg.use_utility_router:
+                def budget_result_utility(result):
+                    idx = 2
+                    if cfg.use_stability_head:
+                        idx += 1
+                    if cfg.use_consistency_head:
+                        idx += 1
+                    return result[idx]
+
                 def serial_jumprec_utility(ids, mask, lens, threshold: float = 0.50):
                     state0, layer_mask, position_ids, position_embeddings = model.encode(ids, mask)
                     open_idx = torch.arange(ids.size(0), device=ids.device)
@@ -6435,7 +6642,7 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                             corrections,
                         )
                         logits = result[0]
-                        utility = result[-1]
+                        utility = budget_result_utility(result)
                         accept = torch.sigmoid(utility) >= threshold
                         last = logits
                         open_idx = open_idx[~accept]
@@ -6458,6 +6665,99 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                 )
                 out["jumprec_serial_utility_090_ms_per_batch"] = time_fn(
                     lambda ids, mask, lens: serial_jumprec_utility(ids, mask, lens, 0.90)
+                )
+
+                def serial_jumprec_selective_agree(
+                    ids,
+                    mask,
+                    lens,
+                    verify_threshold: float = 0.05,
+                    direct_floor: float = 0.90,
+                    agree_floor: float = 0.00,
+                ):
+                    state0, layer_mask, position_ids, position_embeddings = model.encode(ids, mask)
+                    open_idx = torch.arange(ids.size(0), device=ids.device)
+                    last = None
+
+                    def take_batch(x, idx):
+                        if x is None:
+                            return None
+                        if x.size(0) == ids.size(0):
+                            return x.index_select(0, idx)
+                        return x
+
+                    for corrections in range(cfg.max_correct + 1):
+                        if open_idx.numel() == 0:
+                            break
+                        sub_state0 = state0.index_select(0, open_idx)
+                        sub_mask = take_batch(layer_mask, open_idx)
+                        sub_pos = take_batch(position_ids, open_idx)
+                        sub_emb = tuple(take_batch(t, open_idx) for t in position_embeddings) if position_embeddings else None
+                        sub_lens = lens.index_select(0, open_idx)
+                        result = jumprec.forward_budget_encoded(
+                            sub_state0,
+                            sub_mask,
+                            sub_pos,
+                            sub_emb,
+                            sub_lens,
+                            corrections,
+                        )
+                        logits, verify = result[:2]
+                        utility = torch.sigmoid(budget_result_utility(result))
+                        probs = F.softmax(logits, dim=-1)
+                        top2 = probs.topk(2, dim=-1).values
+                        direct = utility >= direct_floor
+                        accept = direct.clone()
+
+                        if corrections < cfg.max_correct:
+                            check = (
+                                (~direct)
+                                & (utility >= agree_floor)
+                                & (torch.sigmoid(verify) >= verify_threshold)
+                                & ((top2[:, 0] - top2[:, 1]) >= 0.05)
+                                & (top2[:, 0] >= 0.45)
+                            )
+                            if check.any():
+                                check_idx = torch.nonzero(check, as_tuple=False).flatten()
+                                check_global = open_idx.index_select(0, check_idx)
+                                check_state0 = state0.index_select(0, check_global)
+                                check_mask = take_batch(layer_mask, check_global)
+                                check_pos = take_batch(position_ids, check_global)
+                                check_emb = (
+                                    tuple(take_batch(t, check_global) for t in position_embeddings)
+                                    if position_embeddings
+                                    else None
+                                )
+                                check_lens = lens.index_select(0, check_global)
+                                next_result = jumprec.forward_budget_encoded(
+                                    check_state0,
+                                    check_mask,
+                                    check_pos,
+                                    check_emb,
+                                    check_lens,
+                                    corrections + 1,
+                                )
+                                next_logits = next_result[0]
+                                agree = logits.index_select(0, check_idx).argmax(dim=-1) == next_logits.argmax(dim=-1)
+                                accept[check_idx] = agree
+
+                        last = logits
+                        open_idx = open_idx[~accept]
+                    if open_idx.numel() > 0:
+                        sub_state0 = state0.index_select(0, open_idx)
+                        sub_mask = take_batch(layer_mask, open_idx)
+                        sub_pos = take_batch(position_ids, open_idx)
+                        sub_emb = tuple(take_batch(t, open_idx) for t in position_embeddings) if position_embeddings else None
+                        sub_lens = lens.index_select(0, open_idx)
+                        full = model.run_steps_from(sub_state0, sub_state0, sub_mask, sub_pos, sub_emb, 0, cfg.loop_steps)
+                        last = model.classify_state(full, sub_lens, sub_mask, sub_pos, sub_emb)
+                    return last
+
+                out["jumprec_serial_selective_agree_speed_ms_per_batch"] = time_fn(
+                    lambda ids, mask, lens: serial_jumprec_selective_agree(ids, mask, lens, 0.05, 0.90, 0.00)
+                )
+                out["jumprec_serial_selective_agree_quality002_ms_per_batch"] = time_fn(
+                    lambda ids, mask, lens: serial_jumprec_selective_agree(ids, mask, lens, 0.35, 0.93, 0.30)
                 )
                 if cfg.use_consistency_head:
                     def serial_jumprec_utility_cats(
@@ -6817,6 +7117,14 @@ def run_experiment(cfg: Config, device_name: str = "cuda") -> Dict[str, object]:
                         )
                         item["jumprec_serial_utility_090_ms_per_batch"] = time_fn(
                             lambda ids, mask, lens: serial_jumprec_utility(ids, mask, lens, 0.90),
+                            timing_bsz,
+                        )
+                        item["jumprec_serial_selective_agree_speed_ms_per_batch"] = time_fn(
+                            lambda ids, mask, lens: serial_jumprec_selective_agree(ids, mask, lens, 0.05, 0.90, 0.00),
+                            timing_bsz,
+                        )
+                        item["jumprec_serial_selective_agree_quality002_ms_per_batch"] = time_fn(
+                            lambda ids, mask, lens: serial_jumprec_selective_agree(ids, mask, lens, 0.35, 0.93, 0.30),
                             timing_bsz,
                         )
                         if cfg.use_consistency_head:

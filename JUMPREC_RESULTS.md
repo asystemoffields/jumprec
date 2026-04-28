@@ -3517,3 +3517,68 @@ architecture contract or candidate trajectory, for example an ambiguous-case
 second check, an explicit consistency certificate trained into the candidate
 state, or monotone/stability constraints that make agreement unnecessary rather
 than merely predicted.
+
+## 2026-04-28 - selective agreement contract audit
+
+The one-candidate probe audit suggested that the current candidate state does
+not contain enough rare-error information to fully replace adjacent-budget
+agreement. The next contract audit therefore tested a hybrid execution policy:
+accept very high-utility candidates directly, run the adjacent-budget agreement
+check only for ambiguous candidates, and fall back to the full teacher when
+neither path is trusted.
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval --seed 202
+modal run run_recurrent_smol.py --mode core3_8n4h_strathop_polish2_joint_halt_quality_stability_reuse_highval --seed 42
+```
+
+High-validation means over seeds 101, 202, and repaired polish2 42:
+
+| Selector | Utility Acc | Utility Core | Agreement Acc | Agreement Core | Selective Acc | Selective Core | Adjacent Check Rate | Effective Core With Checks |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Speed | 99.628% | 2.87 / 18 | 99.711% | 2.71 / 18 | 99.713% | 2.70 / 18 | 29.9% | 4.48 / 18 |
+| Teacher floor | 99.648% | 2.88 / 18 | 99.711% | 2.71 / 18 | 99.713% | 2.70 / 18 | 29.9% | 4.48 / 18 |
+| Teacher +0.1 pp | 99.687% | 2.99 / 18 | 99.742% | 2.76 / 18 | 99.713% | 2.70 / 18 | 29.9% | 4.48 / 18 |
+| Teacher +0.2 pp | 99.705% | 3.03 / 18 | 99.748% | 2.79 / 18 | 99.760% | 2.89 / 18 | 43.9% | 5.51 / 18 |
+
+The speed and teacher-floor selector consistently chose
+`verify_threshold=0.05`, `direct_floor=0.90`, and `agree_floor=0.00`.
+That means the utility head directly accepts obvious cases, while the verifier
+and margin gates decide which remaining cases deserve the adjacent check.
+
+Serial timing means from the same runs:
+
+| Batch size | Full loop | Utility 0.90 | True agreement 0.50 | Selective agreement speed | Selective vs Agreement |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 22.64 ms | 11.98 ms | 16.59 ms | 12.24 ms | 0.75x |
+| 64 | 34.96 ms | 40.15 ms | 48.03 ms | 38.94 ms | 0.82x |
+
+Interpretation:
+
+Selective agreement is the first contract change that reaches the agreement
+quality/counted-core frontier. At speed and teacher-floor it slightly beats
+true agreement on accuracy and counted route core, while running adjacent
+checks on only about 30% of examples. At batch size 1 it is close to utility
+latency and much faster than true agreement or the full loop, which makes it
+viable for the next small-batch general looped-LLM application tests.
+
+The scaling caveat is important. At batch size 64, selective agreement is still
+faster than true agreement, but dynamic subset routing is slower than the
+full-loop and all-budgets parallel baselines. This is not a contradiction: the
+policy saves counted work, but fragmented GPU execution can erase that saving
+when throughput batching is large. The current promotion target should
+therefore be interactive/small-batch adaptive inference, not batched-serving
+throughput. A production-scale version needs an execution plan that avoids many
+tiny dynamic batches, such as grouped checks, cached adjacent results, static
+microbatching, or a better one-candidate certificate.
+
+Conclusion:
+
+The road is unblocked for small-batch general LLM application testing. The
+remaining research question is no longer whether the agreement frontier is
+reachable without always paying true agreement; it is how to preserve this
+selective-check contract under larger batches and more realistic generation
+workloads.

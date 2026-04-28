@@ -68,6 +68,11 @@ audit-only reference policies:
 - `agree`: additionally checks whether adjacent correction budgets predict the
   same answer. This is a strong quality reference, but it is expensive because
   it runs extra budget candidates.
+- `selective_agreement`: accepts high-utility candidates directly, runs the
+  adjacent-budget agreement check only for ambiguous cases, and falls back to
+  the full teacher otherwise. This is the current best small-batch adaptive
+  contract because it preserves agreement-level quality while reducing the
+  adjacent-check surface.
 - `budget_controller`: predicts a sufficient correction budget from the initial
   state before candidate evaluation. It is the cheapest controller shape, but it
   has to infer difficulty before seeing candidate confidence.
@@ -130,7 +135,9 @@ Held-out audits also retain the validation and final threshold curves so a run
 can be reinterpreted at different quality/cost operating points. The runner
 records speed-biased, tighter-drop, teacher-floor, and teacher-plus selector
 views, plus per-policy acceptance precision and acceptance share by correction
-budget.
+budget. Current high-validation audits also report selective-agreement check
+rate and an effective-core proxy that charges for the adjacent checks actually
+run.
 
 Mode names encode this flow. A mode ending in `_reuse` or `_reuse_highval`
 loads an existing checkpoint and performs evaluation only. A mode with
@@ -218,9 +225,12 @@ The execution strategy differs by scale:
 
 This is why the agreement path is treated as a reference rather than the final
 architecture. It often gives the best quality frontier on the synthetic task,
-but it does so by evaluating neighboring candidates. A scalable controller has
-to capture that reliability signal with one candidate, a small head, or an
-up-front budget choice that does not fragment inference.
+but it does so by evaluating neighboring candidates. Selective agreement is the
+current compromise: it keeps that reliability signal for ambiguous cases while
+skipping it for obvious accepts. For local and interactive use this is enough to
+justify general looped-LLM application tests. For high-throughput batching, the
+same policy still needs a better execution plan because many small dynamic
+subsets can erase the counted-compute saving.
 
 ## Files
 

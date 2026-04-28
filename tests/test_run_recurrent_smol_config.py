@@ -71,6 +71,7 @@ class JointHaltConfigTests(unittest.TestCase):
             "core3_8n4h_strathop_joint_halt_quality_stability_reuse_highval"
         )
         self.assertTrue(probe_cfg.router_probe_audit)
+        self.assertTrue(probe_cfg.router_selective_agree_audit)
         self.assertEqual(probe_cfg.joint_halt_steps, 0)
         self.assertEqual(probe_cfg.router_val_batches, 256)
         self.assertEqual(probe_cfg.eval_batches, 256)
@@ -79,6 +80,7 @@ class JointHaltConfigTests(unittest.TestCase):
             "core3_8n4h_strathop_joint_halt_quality_reuse_highval"
         )
         self.assertFalse(plain_quality_cfg.router_probe_audit)
+        self.assertFalse(plain_quality_cfg.router_selective_agree_audit)
 
     def test_slo_modes_sample_route_operating_point(self):
         cfg = smol.config_for_mode("core3_8n4h_strathop_joint_halt_slo")
@@ -144,6 +146,10 @@ class JointHaltConfigTests(unittest.TestCase):
         self.assertIn("def candidate_agreement_prob_stack", source)
         self.assertIn("def run_router_probe_audit", source)
         self.assertIn("probe_upper_bound", source)
+        self.assertIn("def choose_selective_agree_thresholds", source)
+        self.assertIn("selective_agreement", source)
+        self.assertIn("serial_jumprec_selective_agree", source)
+        self.assertIn("jumprec_serial_selective_agree_speed_ms_per_batch", source)
         self.assertIn("weights[-1] = 0.0", source)
         self.assertIn("stable_target[-1] = (pred_stack[-1] == full_pred).float()", source)
 

@@ -549,6 +549,12 @@ The current state is encouraging:
   SmolLM hard case.
 - The verifier/controller is now clearly the most important next research
   target.
+- Selective agreement is the first contract change to match the true-agreement
+  quality/counted-core frontier while reducing adjacent checks to about 30% at
+  the speed and teacher-floor operating points.
+- The remaining scaling bottleneck is execution shape: small-batch latency
+  improves, but large-batch dynamic routing is still slower than full-loop or
+  all-budgets parallel execution.
 
 The next phase should be ruthless but constructive:
 
@@ -556,6 +562,8 @@ The next phase should be ruthless but constructive:
 2. Preserve agreement-router quality while reducing overhead.
 3. Tie compute savings to wall-clock in the intended local-inference regime.
 4. Bridge from synthetic pointer chasing to natural-language reasoning tasks.
+5. Start small-batch general looped-LLM application tests with selective
+   agreement as the reference adaptive contract.
 
 Immediate router pivot:
 
@@ -582,62 +590,56 @@ Immediate router pivot:
    current candidate representation. They rank agreement/correctness well, but
    still do not recover agreement's quality/cost frontier under held-out route
    selection.
-11. Keep `agree_then_utility_099` as a diagnostic/reference hybrid only. It
-   nearly tracks agreement, but it is not the scalable one-candidate answer.
-12. Keep true agreement as the quality reference and no-agreement/utility as the
-   speed-shape reference; a new mode only matters if it lands between them in
-   the right direction.
-13. If seed 42 or 202 fail, inspect whether the failure is candidate
-   degradation, over-acceptance, fallback overuse, or utility calibration before
-   adding a new mechanism.
+11. Promote selective agreement as the active adaptive contract for
+   small-batch/interactive tests: direct-accept high-utility cases, run adjacent
+   agreement only for ambiguous cases, and fall back to the full teacher
+   otherwise.
+12. Keep `agree_then_utility_099` as a diagnostic/reference hybrid only. It
+   nearly tracks agreement, but it does not reduce the adjacent-check surface as
+   cleanly as selective agreement.
+13. Keep true agreement as the quality reference and no-agreement/utility as the
+   speed-shape reference; new modes should now report both counted core and
+   wall-clock timing against selective agreement.
+14. If seed 42 or 202 fail on the next task, inspect whether the failure is
+   candidate degradation, over-acceptance, fallback overuse, agreement-check
+   overuse, or utility calibration before adding a new mechanism.
 
 ## Current Bottleneck Answer
 
-The corrected agreement-auxiliary quality/SLO sweep answers the immediate
-question: the last-budget target bug was real, but it was not the main
-bottleneck. Masking the last correction budget out of the agreement auxiliary
-loss and adding per-budget acceptance diagnostics showed that utility accepts
-the highest budget rarely but nonzero, usually with high precision. The stronger
-quality objective remains the best deployable one-candidate utility branch, but
-high-validation reuse still trails true agreement by roughly 0.07 to 0.09
-percentage points at the teacher-plus operating points while using about 0.27
-to 0.34 more counted core layers.
+The current bottleneck answer is now split by deployment regime.
 
-Do not move to broad/general LLM application testing yet. The project is still
-synthetic-benchmark-positive, but the current deployable router has not matched
-the non-deployable agreement frontier. The CATS-style cheap consistency head was
-the obvious literature-adjacent deployable agreement substitute; it trained
-successfully but did not improve the frontier. Per-budget utility thresholding
-and agreement/utility hybrids also failed to produce a deployable substitute:
-the best hybrid nearly tracks agreement only because it still uses agreement.
-Agreement-distilled quality training and quality-plus-joint-stability training
-also failed to close the frontier. Quality-stability is the best current
-deployable high-quality branch, but it still trails true agreement while using
-more counted core at the same selector scenarios.
+For small-batch and interactive inference, the road is unblocked. The selective
+agreement contract matches or slightly beats true agreement at the speed and
+teacher-floor operating points: 99.713% accuracy and 2.70 / 18 counted core
+layers versus agreement at 99.711% and 2.71 / 18. It only runs adjacent-budget
+checks on about 30% of examples. Batch-1 timing averages 12.24 ms, close to
+utility 0.90 at 11.98 ms and much faster than true agreement at 16.59 ms or
+the full loop at 22.64 ms. This is strong enough to start general looped-LLM
+application tests in the intended local/interactive regime.
 
-The one-candidate probe upper-bound audit answers the next fork. Offline
-logistic/MLP probes trained on scalar candidate/router features or richer
-hidden-readout features can predict agreement labels well, with rich agreement
-probes around 0.994 AUC. But route selection still does not match true
-agreement's frontier: at speed and teacher-floor selectors no probe reaches
-agreement accuracy, and at teacher-plus selectors the probes that match or
-slightly exceed agreement accuracy spend substantially more counted core. That
-means the current one-candidate representation has useful signal but not enough
-rare-error separability to replace adjacent-budget agreement at the same
-compute.
+For batched throughput, the road is not yet unblocked. At batch size 64,
+selective agreement is faster than true agreement, 38.94 ms versus 48.03 ms,
+but still slower than full-loop or all-budgets parallel execution at about
+35 ms. The issue is execution fragmentation, not counted compute. The next
+throughput-oriented work should focus on grouped checks, cached adjacent
+results, static microbatching, or a one-candidate certificate that preserves
+agreement quality without dynamic adjacent-budget runs.
 
-The next research step should either:
-
-1. harden/refactor the runner enough that new router ideas can be tested without
-   widening one giant script further; or
-2. change the architecture contract: an ambiguous-case second check, an explicit
-   consistency certificate, or candidate-trajectory constraints that make
-   adjacent-budget agreement unnecessary instead of merely predicted.
+The one-candidate probe upper-bound audit still matters: it showed that the
+current single-candidate representation has useful agreement/correctness signal
+but not enough rare-error separability to replace adjacent-budget agreement at
+the same quality/cost frontier. Selective agreement works because it changes
+the contract: it does not try to predict agreement for every case; it pays the
+agreement check only where uncertainty justifies it.
 
 Short-term engineering queue:
 
 1. Keep the new `tests/` guardrails green before adding more modes.
 2. Use `experiments/CHECKPOINT_MANIFEST.md` when launching reuse/highval runs.
-3. Split the first reusable surfaces out of `run_recurrent_smol.py`: config
+3. Build the first general looped-LLM application test around the selective
+   agreement contract and report batch-1 timing first.
+4. Add a throughput follow-up that tests grouped/cached adjacent checks at
+   larger batch sizes.
+5. Split the first reusable surfaces out of `run_recurrent_smol.py`: config
    resolution, held-out audit/selector logic, and checkpoint manifests are the
    highest-leverage extraction points.
