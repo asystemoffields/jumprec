@@ -19,10 +19,11 @@ how the repo is currently set up.
 - `JUMPREC_ARTIFACT_AUDIT.md`: claim-safety and audit gates.
 
 Current headline: selective agreement is the active adaptive contract. It
-matches the true-agreement quality frontier on the synthetic hard case while
-checking adjacent budgets on only the ambiguous slice. It is promoted for
-small-batch/interactive application testing, not yet for high-throughput
-serving.
+matches the true-agreement quality frontier on the compact synthetic hard case
+while checking adjacent budgets on only the ambiguous slice. The natural-language
+graph bridge also passes teacher and prompt-shortcut gates, but it needs many
+more adjacent checks to reach the same quality, so it is a positive bridge
+result rather than a solved scaling result.
 
 ## Core Idea
 
@@ -183,10 +184,26 @@ matters, controls are easy to define, and shortcut/fallback behavior can be
 measured precisely. It's not really evidence for open-ended chat or broad
 reasoning performance yet.
 
-The next bridge family is `core3_8n4h_natgraph_*`. It keeps the graph traversal
-target controlled but changes the interface to natural-language route-card
-prompts, so selective agreement can be tested outside the compact symbolic
-prompt format before any broader LLM claim.
+The current bridge family is `core3_8n4h_natgraph_*`. It keeps the graph
+traversal target controlled but changes the interface to natural-language
+route-card prompts, so selective agreement can be tested outside the compact
+symbolic prompt format before any broader LLM claim.
+
+The active natgraph checkpoint is the polished seed-101 family:
+
+```text
+core3_8n4h_natgraph_polish2_seed101
+core3_8n4h_natgraph_polish2_joint_halt_quality_stability_seed101
+```
+
+The base natgraph teacher was too weak on 4-hop cases, so the current path uses
+two max-hop-focused polish stages before joint halt/selective-agreement testing.
+The polished teacher reaches about 99.5% full-loop accuracy with hop 4 near
+98.9% on its gate eval. The final high-validation selective-agreement audit
+reaches about 99.3% at the speed selector and about 99.5% at the stricter
+teacher-level selector, but the adjacent-check rate is high, roughly 70-90%
+depending on the selector. Batch-1 latency is still favorable versus the full
+loop; batch-64 latency is not.
 
 ## Artifact Discipline
 

@@ -657,15 +657,45 @@ Short-term engineering queue:
    resolution, held-out audit/selector logic, and checkpoint manifests are the
    highest-leverage extraction points.
 
-New bridge modes added after the selective-agreement housekeeping pass:
+Natgraph bridge update:
+
+Seed 101 is positive but more expensive than compact strathop. The base
+natgraph teacher and first polish were hop-4 weak; `polish2` is the current
+bridge predecessor. It reached 99.53% full-loop accuracy and 98.85% hop-4
+accuracy on the teacher gate. The final high-validation selective-agreement
+reuse run reached 99.30% at the speed selector and 99.47% at the teacher-floor
+selector, versus a 99.37% final teacher. Counted core stays favorable, but the
+selector needs far more adjacent checks than compact strathop: about 79% at the
+speed point and about 71% at the teacher-floor point. Batch-1 timing remains
+positive, 18.37 ms versus 24.72 ms full-loop; batch-64 timing is not positive,
+61.48 ms versus 60.53 ms full-loop.
+
+The robustness audit passed the expected shortcut checks for both teacher and
+JumpRec. Relabel stays high, while map scrambling and wrong-hop prompts collapse
+near chance:
+
+| Variant | Teacher Full | Jump c3 | Agree 0.80 |
+|---|---:|---:|---:|
+| normal | 99.40% | 99.00% | 99.25% |
+| relabel | 99.40% | 99.04% | 99.24% |
+| map_scramble | 15.83% | 15.50% | 15.49% |
+| hop_random | 18.26% | 19.14% | 19.13% |
+
+Bridge modes:
 
 ```powershell
 python .\run_recurrent_smol.py --mode dry_natgraph_teacher --local
 python .\run_recurrent_smol.py --mode dry_natgraph_joint_halt_quality_stability --local
 python .\run_recurrent_smol.py --mode dry_natgraph_joint_halt_quality_stability_reuse --local
 modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_teacher --seed 101
-modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_joint_halt_quality_stability --seed 101
-modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_audit --seed 101
 ```
 
-Do not fan this out until the seed-101 teacher gate is healthy.
+Next bridge decision: do one of two things. Either fan out natgraph polish2 to
+seeds 42/202 to check robustness of the interface, or move to the first general
+looped-LLM application test while carrying the caveat that natgraph still leans
+heavily on adjacent checks.

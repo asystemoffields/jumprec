@@ -1242,6 +1242,161 @@ def config_for_mode(mode: str) -> Config:
         cfg.teacher_gate_min_worst_hop = 0.98
         cfg.eval_batches = 96
         cfg.log_every = 500
+    elif mode == "core3_8n4h_natgraph_teacher_resume":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 9500
+        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+        cfg.final_loop_loss_weight = 4.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.resume_teacher_training = True
+        cfg.load_checkpoint_tag = "core3_8n4h_natgraph_seed{seed}"
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_seed{seed}"
+        cfg.teacher_val_every = 500
+        cfg.teacher_val_batches = 16
+        cfg.teacher_gate_min_full = 0.995
+        cfg.teacher_gate_min_worst_hop = 0.98
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_natgraph_polish_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 6000
+        cfg.lr_blocks = 2e-5
+        cfg.lr_head = 1.5e-4
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 8.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.resume_teacher_training = True
+        cfg.load_checkpoint_tag = "core3_8n4h_natgraph_seed{seed}"
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_polish_seed{seed}"
+        cfg.teacher_val_every = 250
+        cfg.teacher_val_batches = 16
+        cfg.teacher_gate_min_full = 0.995
+        cfg.teacher_gate_min_worst_hop = 0.98
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_natgraph_polish_eval_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.lr_blocks = 2e-5
+        cfg.lr_head = 1.5e-4
+        cfg.hard_hop_fraction = 0.70
+        cfg.hard_hop_loss_weight = 2.5
+        cfg.final_loop_loss_weight = 8.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_polish_seed{seed}"
+        cfg.eval_batches = 256
+        cfg.timing_batches = 16
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_natgraph_polish2_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 4000
+        cfg.lr_blocks = 1e-5
+        cfg.lr_head = 7.5e-5
+        cfg.hard_hop_fraction = 0.80
+        cfg.hard_hop_loss_weight = 3.0
+        cfg.final_loop_loss_weight = 10.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.resume_teacher_training = True
+        cfg.load_checkpoint_tag = "core3_8n4h_natgraph_polish_seed{seed}"
+        cfg.save_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_polish2_seed{seed}"
+        cfg.teacher_val_every = 250
+        cfg.teacher_val_batches = 16
+        cfg.teacher_gate_min_full = 0.995
+        cfg.teacher_gate_min_worst_hop = 0.98
+        cfg.eval_batches = 96
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_natgraph_polish2_eval_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.lr_blocks = 1e-5
+        cfg.lr_head = 7.5e-5
+        cfg.hard_hop_fraction = 0.80
+        cfg.hard_hop_loss_weight = 3.0
+        cfg.final_loop_loss_weight = 10.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_polish2_seed{seed}"
+        cfg.eval_batches = 256
+        cfg.timing_batches = 16
+        cfg.log_every = 500
+    elif mode == "core3_8n4h_natgraph_polish2_audit_teacher":
+        cfg.n_nodes = 8
+        cfg.max_hops = 4
+        cfg.preserve_steps = 2
+        cfg.max_length = 224
+        cfg.prompt_style = "natural_graph"
+        cfg.core_layers = 3
+        cfg.coda_start = 27
+        cfg.coda_layers = 3
+        cfg.final_steps = 0
+        cfg.recurrent_steps = 0
+        cfg.lr_blocks = 1e-5
+        cfg.lr_head = 7.5e-5
+        cfg.hard_hop_fraction = 0.80
+        cfg.hard_hop_loss_weight = 3.0
+        cfg.final_loop_loss_weight = 10.0
+        cfg.jump_steps = 0
+        cfg.direct_steps = 0
+        cfg.load_checkpoints = True
+        cfg.checkpoint_tag = "core3_8n4h_natgraph_polish2_seed{seed}"
+        cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
+        cfg.eval_batches = 256
+        cfg.timing_batches = 8
+        cfg.log_every = 500
     elif mode == "core3_8n4h_strathop_gate_teacher":
         cfg.n_nodes = 8
         cfg.max_hops = 4
@@ -1909,10 +2064,18 @@ def config_for_mode(mode: str) -> Config:
     elif mode in (
         "core3_8n4h_natgraph_joint_halt_quality_stability",
         "core3_8n4h_natgraph_joint_halt_quality_stability_reuse",
+        "core3_8n4h_natgraph_joint_halt_quality_stability_reuse_audit",
         "core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval",
+        "core3_8n4h_natgraph_polish2_joint_halt_quality_stability",
+        "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse",
+        "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_audit",
+        "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_highval",
     ):
         is_natgraph_reuse = "_reuse" in mode
+        is_audit_reuse = mode.endswith("_reuse_audit")
         is_highval_reuse = mode.endswith("_reuse_highval")
+        is_polish2_natgraph = mode.startswith("core3_8n4h_natgraph_polish2_")
+        natgraph_prefix = "core3_8n4h_natgraph_polish2" if is_polish2_natgraph else "core3_8n4h_natgraph"
         cfg.n_nodes = 8
         cfg.max_hops = 4
         cfg.preserve_steps = 2
@@ -1923,13 +2086,18 @@ def config_for_mode(mode: str) -> Config:
         cfg.coda_layers = 3
         cfg.final_steps = 0
         cfg.recurrent_steps = 0
-        cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
-        cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
-        cfg.final_loop_loss_weight = 4.0
+        if is_polish2_natgraph:
+            cfg.hard_hop_fraction = 0.80
+            cfg.hard_hop_loss_weight = 3.0
+            cfg.final_loop_loss_weight = 10.0
+        else:
+            cfg.hop_sample_weights = "0.10,0.20,0.35,0.35"
+            cfg.hop_loss_weights = "1.0,1.2,2.0,2.0"
+            cfg.final_loop_loss_weight = 4.0
         cfg.load_checkpoint_tag = (
-            "core3_8n4h_natgraph_joint_halt_quality_stability_seed{seed}"
+            f"{natgraph_prefix}_joint_halt_quality_stability_seed{{seed}}"
             if is_natgraph_reuse
-            else "core3_8n4h_natgraph_seed{seed}"
+            else f"{natgraph_prefix}_seed{{seed}}"
         )
         cfg.jump_steps = 0 if is_natgraph_reuse else 4500
         cfg.joint_halt_steps = 0 if is_natgraph_reuse else 2000
@@ -1938,7 +2106,7 @@ def config_for_mode(mode: str) -> Config:
         cfg.strict_need_agreement = False
         cfg.load_checkpoints = True
         cfg.save_checkpoints = not is_natgraph_reuse
-        cfg.checkpoint_tag = "core3_8n4h_natgraph_joint_halt_quality_stability_seed{seed}"
+        cfg.checkpoint_tag = f"{natgraph_prefix}_joint_halt_quality_stability_seed{{seed}}"
         cfg.load_jumprec_state = is_natgraph_reuse
         cfg.use_stability_head = True
         cfg.use_utility_router = True
@@ -1967,6 +2135,12 @@ def config_for_mode(mode: str) -> Config:
             cfg.timing_batch_sizes = "1,64"
             cfg.router_probe_audit = True
             cfg.router_selective_agree_audit = True
+        if is_audit_reuse:
+            cfg.router_val_batches = 0
+            cfg.eval_batches = 256
+            cfg.audit_prompt_variants = "normal,relabel,map_scramble,hop_random"
+            cfg.timing_batches = 4
+            cfg.timing_batch_sizes = "1,64"
         cfg.log_every = 500
     elif mode in (
         "core3_8n4h_strathop_joint_halt",
@@ -7551,11 +7725,17 @@ if __name__ == "__main__":
             "core3_8n4h_hardhop_jumprec",
             "core3_8n4h_strathop_teacher",
             "core3_8n4h_natgraph_teacher",
+            "core3_8n4h_natgraph_teacher_resume",
+            "core3_8n4h_natgraph_polish_teacher",
+            "core3_8n4h_natgraph_polish2_teacher",
             "core3_8n4h_strathop_gate_teacher",
             "core3_8n4h_strathop_polish_teacher",
             "core3_8n4h_strathop_polish2_teacher",
             "core3_8n4h_strathop_eval_teacher",
             "core3_8n4h_natgraph_eval_teacher",
+            "core3_8n4h_natgraph_polish_eval_teacher",
+            "core3_8n4h_natgraph_polish2_eval_teacher",
+            "core3_8n4h_natgraph_polish2_audit_teacher",
             "core3_8n4h_strathop_polish2_eval_teacher",
             "core3_8n4h_strathop_audit_teacher",
             "core3_8n4h_strathop_polish2_audit_teacher",
@@ -7625,7 +7805,12 @@ if __name__ == "__main__":
             "core3_8n4h_strathop_polish2_joint_halt_quality_cats_reuse_highval",
             "core3_8n4h_natgraph_joint_halt_quality_stability",
             "core3_8n4h_natgraph_joint_halt_quality_stability_reuse",
+            "core3_8n4h_natgraph_joint_halt_quality_stability_reuse_audit",
             "core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval",
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability",
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse",
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_audit",
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_highval",
             "core3_8n4h_strathop_joint_halt_quality_stability",
             "core3_8n4h_strathop_polish2_joint_halt_quality_stability",
             "core3_8n4h_strathop_joint_halt_quality_stability_reuse",

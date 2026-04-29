@@ -107,19 +107,36 @@ path, held-out audit, and timing keys.
 
 ## Application Bridge
 
-The first bridge beyond compact symbolic prompts is now wired as `natgraph`.
-It keeps the same controlled recurrence target but presents the task as a
-natural-language route card:
+The first bridge beyond compact symbolic prompts is now positive but not fully
+scaling-clean. The `natgraph` family keeps the same controlled recurrence
+target but presents the task as a natural-language route card.
 
 ```text
-core3_8n4h_natgraph_teacher
-core3_8n4h_natgraph_joint_halt_quality_stability
-core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval
+core3_8n4h_natgraph_polish2_teacher
+core3_8n4h_natgraph_polish2_joint_halt_quality_stability
+core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_highval
+core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_audit
 ```
 
-This is not yet a broad language-modeling claim. It is the next gate: check
-whether the recurrent teacher, JumpRec candidate path, and selective-agreement
-controller survive a more realistic language interface.
+Status on seed 101:
+
+| Result | Accuracy / Cost |
+|---|---:|
+| Polished teacher gate | 99.53% full, 98.85% hop 4 |
+| High-val teacher in reuse run | 99.37% final |
+| Selective agreement, speed selector | 99.30%, 3.93 / 18 counted core |
+| Selective agreement, teacher-floor selector | 99.47%, 4.37 / 18 counted core |
+| Speed-selector adjacent check rate | 79.1% |
+| Teacher-floor adjacent check rate | 70.8% |
+| Batch-1 selective speed timing | 18.37 ms vs 24.72 ms full loop |
+| Batch-64 selective speed timing | 61.48 ms vs 60.53 ms full loop |
+
+Prompt robustness also passes the expected shortcut audit: consistent relabeling
+stays high, while map scrambling and wrong-hop prompts collapse near chance for
+both teacher and JumpRec. This is still not a broad language-modeling claim.
+The bridge says the architecture survives a more natural language interface,
+but the controller leans harder on adjacent checks than it did on the compact
+prompt format.
 
 ## What Is Historical Or Diagnostic
 

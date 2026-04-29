@@ -17,7 +17,9 @@ These are the required predecessors for current JumpRec and joint-halting work:
 |---|---|---|
 | Base 8-node / 4-hop | `core3_8n4h_strathop_seed{seed}` | Seeds 101 and 202 in the current cross-seed set. |
 | Repaired polish2 | `core3_8n4h_strathop_polish2_seed{seed}` | Seed 42 in the current cross-seed set. |
-| Natgraph bridge | `core3_8n4h_natgraph_seed{seed}` | Natural-language route-card bridge; start with seed 101 only. |
+| Natgraph base bridge | `core3_8n4h_natgraph_seed{seed}` | Natural-language route-card bridge; seed 101 base teacher was hop-4 weak. |
+| Natgraph polish | `core3_8n4h_natgraph_polish_seed{seed}` | Max-hop-focused polish from the base natgraph teacher. |
+| Natgraph polish2 | `core3_8n4h_natgraph_polish2_seed{seed}` | Active seed-101 natgraph predecessor for joint halt/selective agreement. |
 
 ## Active Joint-Halt Modes
 
@@ -35,6 +37,7 @@ Training modes load the teacher family and save a reusable joint-halt checkpoint
 | `*_joint_halt_slo_stability` | matching teacher | `*_joint_halt_slo_stability_seed{seed}` |
 | `*_joint_halt_quality_cats` | `*_joint_halt_quality_seed{seed}` | `*_joint_halt_quality_cats_seed{seed}` |
 | `core3_8n4h_natgraph_joint_halt_quality_stability` | `core3_8n4h_natgraph_seed{seed}` | `core3_8n4h_natgraph_joint_halt_quality_stability_seed{seed}` |
+| `core3_8n4h_natgraph_polish2_joint_halt_quality_stability` | `core3_8n4h_natgraph_polish2_seed{seed}` | `core3_8n4h_natgraph_polish2_joint_halt_quality_stability_seed{seed}` |
 
 ## Current Promoted Checkpoint Family
 
@@ -60,11 +63,15 @@ The natgraph bridge reuse mode is:
 
 ```text
 core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval
+core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_highval
+core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_audit
 ```
 
-It loads `core3_8n4h_natgraph_joint_halt_quality_stability_seed{seed}` and
-runs the same selective-agreement high-validation audit on the route-card
-prompt distribution.
+The active seed-101 bridge uses the `natgraph_polish2` variants. The highval
+mode runs the selective-agreement held-out selector audit on the route-card
+prompt distribution. The reuse-audit mode skips held-out threshold grids and
+runs teacher plus JumpRec prompt variants: `normal`, `relabel`, `map_scramble`,
+and `hop_random`.
 
 Reuse modes load the corresponding joint-halt checkpoint, skip additional
 joint-halt training, and run evaluation/audit only:

@@ -13,6 +13,67 @@ Current state first:
 This file is chronological and intentionally preserves older failed or
 superseded branches. Later sections override earlier progress-report language.
 
+## 2026-04-28 - Natgraph bridge: selective agreement survives, but check rate rises
+
+Commands:
+
+```text
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_teacher_resume --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_audit_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_audit --seed 101
+```
+
+Teacher path:
+
+| Mode | Gate / Eval Result |
+|---|---:|
+| `natgraph_teacher_resume` | subthreshold, 92.45% eval full, 72.14% hop 4 |
+| `natgraph_polish_teacher` | near miss, 98.62% eval full, 95.83% hop 4 |
+| `natgraph_polish2_teacher` | passed, 99.53% eval full, 98.85% hop 4 |
+
+High-validation selective-agreement audit on the final polish2 joint-halt
+checkpoint:
+
+| Policy / selector | Final acc | Counted core | Effective core with checks | Check rate | False accepts |
+|---|---:|---:|---:|---:|---:|
+| no-agree speed | 98.43% | 4.22 / 18 | n/a | 0.0% | 1.32% |
+| true agreement speed | 99.10% | 3.85 / 18 | n/a | broad | 0.76% |
+| utility speed | 99.24% | 4.73 / 18 | n/a | 0.0% | 0.45% |
+| selective agreement speed | 99.30% | 3.93 / 18 | 9.18 / 18 | 79.1% | 0.60% |
+| selective agreement teacher-floor | 99.47% | 4.37 / 18 | 9.27 / 18 | 70.8% | 0.29% |
+
+Timing:
+
+| Batch size | Full loop | Selective speed | Selective quality |
+|---:|---:|---:|---:|
+| 1 | 24.72 ms | 18.37 ms | 19.33 ms |
+| 64 | 60.53 ms | 61.48 ms | 74.25 ms |
+
+Prompt robustness audit:
+
+| Variant | Teacher full | Teacher hop 4 | Jump c3 | Agree 0.80 | Utility 0.80 |
+|---|---:|---:|---:|---:|---:|
+| normal | 99.40% | 98.56% | 99.00% | 99.25% | 99.38% |
+| relabel | 99.40% | 98.55% | 99.04% | 99.24% | 99.30% |
+| map_scramble | 15.83% | 19.37% | 15.50% | 15.49% | 15.48% |
+| hop_random | 18.26% | 20.42% | 19.14% | 19.13% | 19.12% |
+
+Interpretation:
+
+The natural-language route-card bridge is positive: the recurrent teacher can
+be polished to the same rough quality band, JumpRec remains strong, and the
+prompt shortcut audit behaves correctly. The important caveat is scaling. On
+natgraph, selective agreement reaches teacher-level quality by checking many
+more adjacent candidates than on compact strathop. That still improves
+small-batch latency versus the full loop, but it does not solve batch-64
+throughput. Treat this as a green bridge gate for small-batch application
+testing, not as evidence that the high-throughput controller problem is solved.
+
 ## 2026-04-25 - v0 smoke probe
 
 Command:

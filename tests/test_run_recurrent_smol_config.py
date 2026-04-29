@@ -89,6 +89,34 @@ class JointHaltConfigTests(unittest.TestCase):
         self.assertTrue(teacher_cfg.save_checkpoints)
         self.assertGreaterEqual(teacher_cfg.max_length, 224)
 
+        resume_cfg = smol.config_for_mode("core3_8n4h_natgraph_teacher_resume")
+        self.assertTrue(resume_cfg.load_checkpoints)
+        self.assertTrue(resume_cfg.resume_teacher_training)
+        self.assertEqual(resume_cfg.load_checkpoint_tag, "core3_8n4h_natgraph_seed{seed}")
+        self.assertEqual(resume_cfg.checkpoint_tag, "core3_8n4h_natgraph_seed{seed}")
+
+        polish_cfg = smol.config_for_mode("core3_8n4h_natgraph_polish_teacher")
+        self.assertEqual(polish_cfg.prompt_style, "natural_graph")
+        self.assertEqual(polish_cfg.load_checkpoint_tag, "core3_8n4h_natgraph_seed{seed}")
+        self.assertEqual(polish_cfg.checkpoint_tag, "core3_8n4h_natgraph_polish_seed{seed}")
+        self.assertTrue(polish_cfg.resume_teacher_training)
+        self.assertGreater(polish_cfg.hard_hop_fraction, 0.0)
+        self.assertGreater(polish_cfg.final_loop_loss_weight, teacher_cfg.final_loop_loss_weight)
+
+        polish2_cfg = smol.config_for_mode("core3_8n4h_natgraph_polish2_teacher")
+        self.assertEqual(polish2_cfg.prompt_style, "natural_graph")
+        self.assertEqual(polish2_cfg.load_checkpoint_tag, "core3_8n4h_natgraph_polish_seed{seed}")
+        self.assertEqual(polish2_cfg.checkpoint_tag, "core3_8n4h_natgraph_polish2_seed{seed}")
+        self.assertTrue(polish2_cfg.resume_teacher_training)
+        self.assertGreater(polish2_cfg.hard_hop_fraction, polish_cfg.hard_hop_fraction)
+        self.assertLess(polish2_cfg.lr_blocks, polish_cfg.lr_blocks)
+
+        audit_cfg = smol.config_for_mode("core3_8n4h_natgraph_polish2_audit_teacher")
+        self.assertEqual(audit_cfg.prompt_style, "natural_graph")
+        self.assertEqual(audit_cfg.checkpoint_tag, "core3_8n4h_natgraph_polish2_seed{seed}")
+        self.assertIn("relabel", audit_cfg.audit_prompt_variants)
+        self.assertGreaterEqual(audit_cfg.eval_batches, 256)
+
         train_cfg = smol.config_for_mode("core3_8n4h_natgraph_joint_halt_quality_stability")
         self.assertEqual(train_cfg.prompt_style, "natural_graph")
         self.assertTrue(train_cfg.use_utility_router)
@@ -102,6 +130,22 @@ class JointHaltConfigTests(unittest.TestCase):
         self.assertEqual(train_cfg.joint_halt_steps, 2000)
         self.assertFalse(train_cfg.load_jumprec_state)
 
+        polish2_train_cfg = smol.config_for_mode(
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability"
+        )
+        self.assertEqual(polish2_train_cfg.prompt_style, "natural_graph")
+        self.assertEqual(
+            polish2_train_cfg.load_checkpoint_tag,
+            "core3_8n4h_natgraph_polish2_seed{seed}",
+        )
+        self.assertEqual(
+            polish2_train_cfg.checkpoint_tag,
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_seed{seed}",
+        )
+        self.assertGreater(polish2_train_cfg.hard_hop_fraction, 0.0)
+        self.assertEqual(polish2_train_cfg.jump_steps, 4500)
+        self.assertEqual(polish2_train_cfg.joint_halt_steps, 2000)
+
         reuse_cfg = smol.config_for_mode(
             "core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval"
         )
@@ -111,6 +155,27 @@ class JointHaltConfigTests(unittest.TestCase):
         self.assertTrue(reuse_cfg.load_jumprec_state)
         self.assertTrue(reuse_cfg.router_selective_agree_audit)
         self.assertEqual(reuse_cfg.router_val_batches, 256)
+
+        polish2_reuse_cfg = smol.config_for_mode(
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_highval"
+        )
+        self.assertEqual(
+            polish2_reuse_cfg.load_checkpoint_tag,
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_seed{seed}",
+        )
+        self.assertFalse(polish2_reuse_cfg.save_checkpoints)
+        self.assertTrue(polish2_reuse_cfg.load_jumprec_state)
+
+        polish2_audit_reuse_cfg = smol.config_for_mode(
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_audit"
+        )
+        self.assertEqual(
+            polish2_audit_reuse_cfg.load_checkpoint_tag,
+            "core3_8n4h_natgraph_polish2_joint_halt_quality_stability_seed{seed}",
+        )
+        self.assertEqual(polish2_audit_reuse_cfg.router_val_batches, 0)
+        self.assertIn("map_scramble", polish2_audit_reuse_cfg.audit_prompt_variants)
+        self.assertTrue(polish2_audit_reuse_cfg.load_jumprec_state)
 
     def test_natgraph_prompt_formatter_keeps_answer_blank(self):
         labels = smol.route_label_names("natural_graph", 4)

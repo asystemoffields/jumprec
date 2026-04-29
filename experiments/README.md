@@ -34,17 +34,24 @@ The next live path is the natural-language graph traversal bridge. It uses
 route-card prose instead of compact `Task/Map/Start/Hops` prompts, while keeping
 the recurrence target controlled enough for teacher gates and artifact audits.
 
-Run order:
+Current seed-101 run order:
 
 ```powershell
 modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_teacher --seed 101
-modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_joint_halt_quality_stability --seed 101
-modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_joint_halt_quality_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_teacher_resume --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_teacher --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_highval --seed 101
+modal run run_recurrent_smol.py --mode core3_8n4h_natgraph_polish2_joint_halt_quality_stability_reuse_audit --seed 101
 ```
 
-Only expand to seeds 42 and 202 if the seed-101 teacher is strong by hop and
-the high-validation selective-agreement audit is positive. Treat this as a
-bridge result, not a general LLM acceleration claim.
+The base natgraph teacher was not strong enough on hop 4. The promoted bridge
+path is therefore the `polish2` family. Seed 101 is positive: the teacher and
+prompt shortcut audits pass, and selective agreement reaches teacher-level
+quality at small-batch speed. The caveat is adjacent-check rate: natgraph needs
+roughly 70-90% checks in the current selectors, so batch-64 throughput is not
+unblocked.
 
 ## Reproduce Current Result
 
